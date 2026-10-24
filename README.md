@@ -33,6 +33,8 @@ The [Windows build script](admin/club/build-windows.ps1) uses pinned Craft, Craf
 
 A [small patch](admin/club/patches/0001-nextcloud-blueprint-packaging.patch) repairs the pinned recipe's missing Python import and Start Menu launcher. The build checks the recipe revision and clean tree before applying it. `build-info.json` records the patch checksum.
 
+The installation check uses NSIS's explicit all-users mode on a fresh 64-bit runner. It compares the installed executable and sync libraries with the tested build and checks the Start Menu shortcut's target.
+
 The **Sairibus Windows release** workflow runs manually from `main`. It rejects other refs, stale source commits, invalid tags and existing tags. Publication rechecks `main` and the artifact checksums. Releases include `SHA256SUMS`, `build-info.json`, and the complete source archives.
 
 Release automation uses standard GitHub-hosted runners. No signing credentials or server credentials are required. Review changes through pull requests before running a release.

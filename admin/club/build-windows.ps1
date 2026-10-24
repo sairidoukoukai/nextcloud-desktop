@@ -84,16 +84,33 @@ try {
     $recipeDiff = & git -C $blueprints diff --numstat HEAD
     if ($LASTEXITCODE -ne 0 -or $recipeDiff -ne "2`t0`tnextcloud-client/nextcloud-client.py") { throw 'Unexpected packaging recipe changes.' }
     Invoke-Craft --options "nextcloud-client.versionSuffix=$suffix" --package nextcloud-client
-    $installers = @(Get-ChildItem (Join-Path $root 'tmp') -Recurse -File -Filter '*nextcloud*.exe' | Where-Object { $_.Name -ne 'nextcloud.exe' })
+    $installers = @(Get-ChildItem (Join-Path $root 'tmp') -File -Filter 'nextcloud-client-*-windows-cl-msvc2022-x86_64.exe')
     if ($installers.Count -ne 1) { throw "Expected one packaged installer; found $($installers.Count)." }
-    $smoke = Join-Path $env:RUNNER_TEMP 'nextcloud-install-smoke'
-    $installation = Start-Process -FilePath $installers[0].FullName -ArgumentList @('/S', "/D=$smoke") -PassThru -Wait
+    if (![Environment]::Is64BitProcess) { throw 'Installer verification requires 64-bit PowerShell.' }
+    $smoke = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Nextcloud'
+    $installation = Start-Process -FilePath $installers[0].FullName -ArgumentList @('/S', '/AllUsers') -PassThru -Wait
     if ($installation.ExitCode -ne 0) { throw "Installer failed with exit code $($installation.ExitCode)." }
     $application = Join-Path $smoke 'bin/nextcloud.exe'
     if (!(Test-Path $application)) { throw 'Installed application is missing.' }
     if ((Get-Item $application).VersionInfo.FileVersion -notmatch '^35\.0\.0\.') { throw 'Installed client version is incorrect.' }
-    $builtApplication = Join-Path $build 'bin/nextcloud.exe'
-    if ((Get-FileHash $application).Hash -ne (Get-FileHash $builtApplication).Hash) { throw 'Installed application differs from the tested build.' }
+    foreach ($name in @('nextcloud.exe', 'nextcloudsync.dll', 'nextcloud_csync.dll')) {
+        $installedFile = Join-Path $smoke "bin/$name"
+        $builtFile = Join-Path $build "bin/$name"
+        if ((Get-FileHash $installedFile -Algorithm SHA256).Hash -ne (Get-FileHash $builtFile -Algorithm SHA256).Hash) {
+            throw "Installed $name differs from the tested build."
+        }
+    }
+    $shortcutPath = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Nextcloud/Nextcloud.lnk'
+    if (!(Test-Path $shortcutPath)) { throw 'Start Menu launcher is missing.' }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $null
+    try {
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        if ([IO.Path]::GetFullPath($shortcut.TargetPath) -ne [IO.Path]::GetFullPath($application)) { throw 'Start Menu launcher points to the wrong executable.' }
+    } finally {
+        if ($null -ne $shortcut) { [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) | Out-Null }
+        [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) | Out-Null
+    }
     Assert-Source
     $artifacts = Join-Path $workspace 'artifacts'
     New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
