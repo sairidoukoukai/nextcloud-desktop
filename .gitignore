@@ -15,6 +15,10 @@ admin/win/nsi/l10n/pofiles/*.po
 *.swo
 *~$
 build*
+!/admin/club/build-windows.ps1
+__pycache__/
+*.pyc
+/artifacts/
 cscope.*
 tags
 t1.cfg
