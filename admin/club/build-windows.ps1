@@ -74,6 +74,15 @@ try {
     $inventory | Set-Content -Path $inventoryPath -Encoding utf8
     Invoke-Checked python @((Join-Path $workspace 'admin/club/release.py'), 'test-list', $inventoryPath)
     Invoke-Checked ctest @('--test-dir', $build, '--output-on-failure', '--no-tests=error', '--timeout', '180', '-R', $tests)
+    $blueprints = Join-Path $root 'etc/blueprints/locations/craft-blueprints-nextcloud'
+    $blueprintHead = & git -C $blueprints rev-parse HEAD
+    if ($LASTEXITCODE -ne 0 -or $blueprintHead -ne 'd9829275a569d3cf83e42ad9c50140074d01dd9f') { throw 'Packaging recipe revision changed.' }
+    Invoke-Checked git @('-C', $blueprints, 'diff', '--exit-code', 'HEAD', '--')
+    $recipePatch = Join-Path $workspace 'admin/club/patches/0001-nextcloud-blueprint-packaging.patch'
+    Invoke-Checked git @('-C', $blueprints, 'apply', '--check', $recipePatch)
+    Invoke-Checked git @('-C', $blueprints, 'apply', $recipePatch)
+    $recipeDiff = & git -C $blueprints diff --numstat HEAD
+    if ($LASTEXITCODE -ne 0 -or $recipeDiff -ne "2`t0`tnextcloud-client/nextcloud-client.py") { throw 'Unexpected packaging recipe changes.' }
     Invoke-Craft --options "nextcloud-client.versionSuffix=$suffix" --package nextcloud-client
     $installers = @(Get-ChildItem (Join-Path $root 'tmp') -Recurse -File -Filter '*nextcloud*.exe' | Where-Object { $_.Name -ne 'nextcloud.exe' })
     if ($installers.Count -ne 1) { throw "Expected one packaged installer; found $($installers.Count)." }

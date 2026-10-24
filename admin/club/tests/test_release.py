@@ -60,6 +60,8 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(info["source_commit"], "a" * 40)
             self.assertEqual(info["signature"], "unsigned")
             self.assertFalse(info["official_updater"])
+            self.assertEqual(info["packaging_recipe"]["upstream_commit"], release.BLUEPRINTS_COMMIT)
+            self.assertEqual(info["packaging_recipe"]["patch_sha256"], hashlib.sha256(release.RECIPE_PATCH.read_bytes()).hexdigest())
 
     def test_missing_or_invalid_installer_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -5,3 +5,5 @@
 .gitattributes          export-ignore
 .commit-template        export-ignore
 binary/                 export-ignore
+# Preserve packaging patch bytes across platforms.
+admin/club/patches/*.patch -text -whitespace

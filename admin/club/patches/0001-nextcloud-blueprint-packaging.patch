@@ -1,0 +1,23 @@
+SPDX-FileCopyrightText: 2026 Sairibus contributors
+SPDX-License-Identifier: BSD-2-Clause
+
+Repair the pinned Windows packaging recipe: import os and define its launcher.
+
+--- a/nextcloud-client/nextcloud-client.py
++++ b/nextcloud-client/nextcloud-client.py
+@@ -2,6 +2,7 @@
+ # SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ 
+ import info
++import os
+ from Package.CMakePackageBase import *
+ 
+ class subinfo(info.infoclass):
+@@ -85,6 +86,7 @@
+         self.blacklist_file.append(os.path.join(self.packageDir(), 'blacklist.txt'))
+         self.defines["appname"] = "nextcloud"
+         self.defines["company"] = "Nextcloud GmbH"
++        self.defines["executable"] = "bin/nextcloud.exe"
+         self.applicationExecutable = "nextcloud"
+ 
+         self.ignoredPackages += ["binary/mysql"]
