@@ -1,119 +1,44 @@
 <!--
-  - SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
-  - SPDX-FileCopyrightText: 2011 Nextcloud GmbH and Nextcloud contributors
-  - SPDX-License-Identifier: GPL-2.0-or-later
+SPDX-FileCopyrightText: 2026 Sairibus contributors
+SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+SPDX-License-Identifier: GPL-2.0-or-later
 -->
-# Nextcloud Desktop Client
+# Nextcloud Desktop with Cloudflare Access
 
-[![REUSE status](https://api.reuse.software/badge/github.com/nextcloud/desktop)](https://api.reuse.software/info/github.com/nextcloud/desktop)
+An unofficial fork maintained by 再履バス同好会 (Sairibus), based on Nextcloud Desktop 35.0.0. It adds Cloudflare Access Service Token settings to the classic desktop client and retains Nextcloud's browser login and per-device app password.
 
-The Nextcloud Desktop Client is an app to synchronize files from Nextcloud Server with your computer available for Windows, macOS and Linux.
+[Download releases](https://github.com/sairidoukoukai/nextcloud-desktop/releases) · [Upstream project](https://github.com/nextcloud/desktop)
 
-<p align="center">
-    <img src="doc/images/main_dialog_christine.png" alt="Desktop Client on Windows" width="450">
-</p>
+## Install and connect
 
-## Downloads 🚀
-For the latest stable and recommended version, please refer to [the official download page](https://nextcloud.com/install/#install-clients).
+The first release targets Windows x64. Preview installers are unsigned. This fork disables the official automatic updater; install subsequent releases from this repository.
 
-## Help 🛟
-You can find [the user, administration and developer manuals for the desktop client](https://docs.nextcloud.com/#desktop) on our central documentation site.
+1. Obtain a separate Cloudflare **Client ID** and **Client Secret** for your device from the server operator.
+2. Enter the HTTPS Nextcloud address in the account wizard. Open **Cloudflare Access…** before checking the server, enable it, and enter the token pair.
+3. Complete the normal browser login. Nextcloud then issues the device's app password for synchronization.
 
-## Contributing 🫴
-- Make sure to follow our [guidelines for contributing](https://github.com/nextcloud/desktop/blob/98690b1e9141f2c602c9b4583c1f9ed16b95a309/CONTRIBUTING.md) to this repository.
-- Don't forget to read our [Code of Conduct](https://nextcloud.com/community/code-of-conduct/). This document offers some guidance to ensure Nextcloud participants can cooperate effectively in a positive and inspiring atmosphere and to explain how together we can strengthen and support each other.
+Existing accounts can update the token under **Settings → Advanced → Cloudflare Access**. Installing the client does not grant server access: the operator must authorize the token and enable Nextcloud's native login flow.
 
-## Join the team 👪
-There are many ways to contribute, of which development is only one! Find out [how to get involved](https://nextcloud.com/contribute/), including as a translator, designer, tester, helping others, and much more! 😍
+## Credential handling
 
-## Help testing 🔬
-Download and install the client:
+The service token is stored in the operating system's credential store. One HTTPS hostname and port can be configured per profile; its accounts share the token. Replacing that origin requires disabling the existing setting first. Requests to other origins receive no token.
 
-- [All releases](https://github.com/nextcloud-releases/desktop/releases)<br>
-- [Daily builds](https://download.nextcloud.com/desktop/daily)
+Diagnostic logs redact token headers and credential exchanges. The client discards reusable Access cookies. Access failures preserve the native app password until a fresh, bounded `status.php` check confirms the protected server is reachable. Keep that endpoint under the same Access policy as DAV and API requests.
 
-## Reporting issues 🐛
-If you find any bugs or have any suggestion for improvement, please
-[open an issue in this repository](https://github.com/nextcloud/desktop/issues).
+Retire a device by revoking both its Cloudflare Service Token and its Nextcloud app password. Keep the token out of support messages and installers. macOS File Provider is unsupported; classic macOS sync is the intended path. macOS and Linux installers are not part of the initial Windows release.
 
-## Bug fixing and development 🛠️
+## Build and release
 
-> [!TIP]
-> For contributors on macOS, see the [macOS development guide](./doc/macOS-development.md).
+The [Windows build script](admin/club/build-windows.ps1) uses pinned Craft, CraftMaster and blueprint commits from the [build configuration](admin/club/craftmaster.ini). It builds the client, runs nine focused test suites, packages an installer, and checks a silent installation in the disposable runner.
 
-> [!NOTE]  
-> Find the system requirements and instructions on [how to work with KDE Craft in our desktop client blueprints repository](https://github.com/nextcloud/craft-blueprints-nextcloud/).
+The **Sairibus Windows release** workflow runs manually from `main`. It rejects other refs, stale source commits, invalid tags and existing tags. Publication rechecks `main` and the artifact checksums. Releases include `SHA256SUMS`, `build-info.json`, and the complete source archives.
 
-### System requirements
-- Windows 10, Windows 11, macOS 13 Ventura (or newer) or Linux
-- [🔽 Inkscape (to generate icons)](https://inkscape.org/release/)
-- Developer tools: cmake, clang/gcc/g++:
-- Qt6 since 3.14, Qt5 for earlier versions
-- OpenSSL
-- [🔽 QtKeychain](https://github.com/frankosterfeld/qtkeychain)
-- SQLite
-- [Xcode](https://developer.apple.com/xcode/) (only on macOS)
+Release automation uses standard GitHub-hosted runners. No signing credentials or server credentials are required. Review changes through pull requests before running a release.
 
-Optional recommendations:
+For local development, follow the [upstream development documentation](doc). The focused test targets are `CloudflareAccessTest`, `CookiesTest`, `AccountWizardControllerTest`, `SettingsDialogTest`, `PushNotificationsTest`, `RemoteWipeTest`, `AccountStateTest` and `ConnectionValidatorTest`; CTest also runs `AccountWizardWindowQmlTest`.
 
-- [Qt Creator IDE](https://www.qt.io/product/development-tools)
-- [delta: A viewer for git and diff output](https://github.com/dandavison/delta)
+## Provenance and license
 
-### Build
+Service Token support began with [Gedudo's implementation](https://github.com/Gedudo/desktop/commit/98ed7e1b8a048f27194806482ce1fdf0e3bb1875), associated with [upstream issue #11094](https://github.com/nextcloud/desktop/issues/11094). This fork adds credential-preservation, cookie, logging and origin-replacement fixes with regression tests. The Git history retains authorship and AI-assistance disclosures.
 
-Step by step instructions on how to build the client to contribute.
-
-1. Clone the Github repository: `git clone https://github.com/nextcloud/desktop.git`
-2. Create build directory: `mkdir <build directory>`
-3. Navigate into build directory: `cd <build directory>`
-4. Compile: `cmake -S <cloned desktop repo> -B build -DCMAKE_PREFIX_PATH=<dependencies> -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX=. -DNEXTCLOUD_DEV=ON`
-
-> [!TIP]
-> The cmake variable NEXTCLOUD_DEV allows you to run your own build of the client while developing in parallel with an installed version of the client.
-
-Then you might continue with these steps:
-	
-1. 🐛 [Pick a good first issue](https://github.com/nextcloud/desktop/labels/good%20first%20issue)
-2. 👩‍🔧 Create a branch and make your changes. Remember to sign off your commits using `git commit -sm "Your commit message"`
-3. ⬆ Create a [pull request](https://opensource.guide/how-to-contribute/#opening-a-pull-request) and `@mention` the people from the issue to eview
-4. 👍 Fix things that come up during a review
-5. 🎉 Wait for it to get merged!
-
-### Test servers
-
-The easiest way to have a local Nextcloud server to develop, debug and test the client against is [the Nextcloud Docker image](https://github.com/nextcloud/docker).
-The following example shows how to deploy a Nextcloud Docker container on the local host which will be removed again as soon as the command is interrupted.
-Note that this requires Docker to be installed in your developer environment.
-
-```bash
-docker run \
-    --rm \
-    --publish 8080:80 \
-    --env SQLITE_DATABASE=nextcloud.sqlite \
-    --env NEXTCLOUD_ADMIN_USER=admin \
-    --env NEXTCLOUD_ADMIN_PASSWORD=admin \
-    nextcloud
-```
-
-This simple test server already suffices in the most cases. For more advanced server test deployments we also recommend [Nextcloud development environment on Docker Compose](https://juliusknorr.github.io/nextcloud-docker-dev/).
-
-## Get in touch 💬
-* [📋 Forum](https://help.nextcloud.com)
-* [🐘 Mastodon](https://mastodon.xyz/@nextcloud)
-* [🔗 LinkedIn](https://www.linkedin.com/company/nextcloud-gmbh/)
-* [🦋 Bluesky](https://bsky.app/profile/nextcloud.bsky.social)
-* [👥 Facebook](https://www.facebook.com/nextclouders)
-
-You can also [get professional support for Nextcloud and the desktop client](https://nextcloud.com/support)!
-
-## License 📜
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful, but
-    WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
-    or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
-    for more details.
+This project is licensed under [GPL-2.0-or-later](COPYING). It is maintained independently of Nextcloud GmbH. Contributions to upstream remain subject to [Nextcloud's contribution policy](https://github.com/nextcloud/.github/blob/master/AI_POLICY.md).
