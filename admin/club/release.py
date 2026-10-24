@@ -12,6 +12,8 @@ from pathlib import Path
 import re
 
 UPSTREAM_BASE = "ce977e31810bc9f2cdffc4828cc0a14bd0792110"
+BLUEPRINTS_COMMIT = "d9829275a569d3cf83e42ad9c50140074d01dd9f"
+RECIPE_PATCH = Path(__file__).resolve().parent / "patches/0001-nextcloud-blueprint-packaging.patch"
 EXPECTED_TESTS = {
     "CloudflareAccessTest", "CookiesTest", "AccountWizardControllerTest",
     "AccountWizardWindowQmlTest", "SettingsDialogTest", "PushNotificationsTest",
@@ -49,6 +51,11 @@ def checksums(directory, tag, source):
     info.write_text(json.dumps({
         "release_tag": tag, "source_commit": source, "upstream_base": UPSTREAM_BASE,
         "platform": "windows-x64", "signature": "unsigned", "official_updater": False,
+        "packaging_recipe": {
+            "upstream_commit": BLUEPRINTS_COMMIT,
+            "patch_path": "admin/club/patches/0001-nextcloud-blueprint-packaging.patch",
+            "patch_sha256": hashlib.sha256(RECIPE_PATCH.read_bytes()).hexdigest(),
+        },
     }, indent=2) + "\n")
     rows = []
     for path in [installer, info]:
