@@ -15,6 +15,8 @@ class QUrl;
 
 namespace OCC {
 
+class CloudflareAccess;
+
 /**
  * @brief The AccessManager class
  * @ingroup libsync
@@ -26,10 +28,13 @@ class OWNCLOUDSYNC_EXPORT AccessManager : public QNetworkAccessManager
 public:
     static QByteArray generateRequestId();
 
-    AccessManager(QObject *parent = nullptr);
+    AccessManager(QObject *parent = nullptr, CloudflareAccess *cloudflareAccess = nullptr);
 
 protected:
     QNetworkReply *createRequest(QNetworkAccessManager::Operation op, const QNetworkRequest &request, QIODevice *outgoingData = nullptr) override;
+
+private:
+    CloudflareAccess *_cloudflareAccess;
 };
 
 } // namespace OCC

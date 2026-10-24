@@ -62,6 +62,10 @@ set(client_SRCS
     accountmanager.cpp
     advancedsettings.h
     advancedsettings.cpp
+    cloudflareaccesssettings.h
+    cloudflareaccesssettings.cpp
+    cloudflareaccesssettingscontroller.h
+    cloudflareaccesssettingscontroller.cpp
     accountsettings.h
     accountsettings.cpp
     accountsetupfromcommandlinejob.h

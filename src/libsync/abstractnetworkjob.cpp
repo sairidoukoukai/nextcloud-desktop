@@ -4,12 +4,13 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include "common/asserts.h"
-#include "networkjobs.h"
-#include "account.h"
-#include "owncloudpropagator.h"
-#include "httplogger.h"
 #include "accessmanager.h"
+#include "account.h"
+#include "cloudflareaccess.h"
+#include "common/asserts.h"
+#include "httplogger.h"
+#include "networkjobs.h"
+#include "owncloudpropagator.h"
 
 #include "creds/abstractcredentials.h"
 
@@ -347,6 +348,11 @@ QString AbstractNetworkJob::errorString() const
         return *hstsError;
     }
 
+    const auto status = reply()->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if ((status == 401 || status == 403) && CloudflareAccess::instance()->protects(reply()->url())) {
+        return networkReplyErrorString(*reply()) + u' '
+            + tr("Cloudflare Access is enabled. Also check that the service token is valid and allowed by the server's Cloudflare Access policy.");
+    }
     return networkReplyErrorString(*reply());
 }
 

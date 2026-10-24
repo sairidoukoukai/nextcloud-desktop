@@ -4,6 +4,7 @@
  */
 
 #include "remotewipe.h"
+#include "accessmanager.h"
 #include "folderman.h"
 
 #include <QJsonDocument>
@@ -15,11 +16,11 @@ namespace OCC {
 
 Q_LOGGING_CATEGORY(lcRemoteWipe, "nextcloud.gui.remotewipe", QtInfoMsg)
 
-RemoteWipe::RemoteWipe(AccountPtr account, QObject *parent)
-    : QObject(parent),
-      _account(account),
-      _appPassword(QString()),
-      _networkManager{new QNetworkAccessManager{this}}
+RemoteWipe::RemoteWipe(AccountPtr account, QObject *parent, CloudflareAccess *cloudflareAccess)
+    : QObject(parent)
+    , _account(account)
+    , _appPassword(QString())
+    , _networkManager{new AccessManager{this, cloudflareAccess}}
 {
     QObject::connect(AccountManager::instance(), &AccountManager::accountRemoved,
                      this, [=, this](AccountState *accountState) {

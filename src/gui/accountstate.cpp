@@ -6,17 +6,18 @@
 
 #include "accountstate.h"
 
-#include "accountmanager.h"
-#include "remotewipe.h"
 #include "account.h"
+#include "accountmanager.h"
+#include "cloudflareaccess.h"
+#include "configfile.h"
 #include "creds/abstractcredentials.h"
 #include "creds/httpcredentials.h"
 #include "logger.h"
-#include "configfile.h"
+#include "networkjobs.h"
 #include "ocsnavigationappsjob.h"
 #include "ocsuserstatusconnector.h"
 #include "pushnotifications.h"
-#include "networkjobs.h"
+#include "remotewipe.h"
 #include "settings/migration.h"
 
 #include <QSettings>
@@ -89,6 +90,11 @@ AccountState::AccountState(const AccountPtr &account)
     _checkServerAvailibilityTimer.start();
 
     QTimer::singleShot(0, this, &AccountState::slotCheckConnection);
+    connect(CloudflareAccess::instance(), &CloudflareAccess::configurationChanged, this, [this] {
+        if (!isSignedOut()) {
+            checkConnectivity();
+        }
+    });
 }
 
 AccountState::~AccountState() = default;
@@ -287,6 +293,11 @@ void AccountState::systemOnlineConfigurationChanged()
 void AccountState::checkConnectivity()
 {
     qCInfo(lcAccountState()) << "check connectivity";
+
+    const auto access = CloudflareAccess::instance();
+    if (access->protects(account()->url()) && access->busy()) {
+        return;
+    }
 
     if (isSignedOut() || _waitingForNewCredentials) {
         return;

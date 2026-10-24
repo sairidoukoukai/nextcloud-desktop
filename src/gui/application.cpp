@@ -11,6 +11,7 @@
 #include "accountsetupcommandlinemanager.h"
 #include "accountstate.h"
 #include "clientproxy.h"
+#include "cloudflareaccess.h"
 #include "config.h"
 #include "configfile.h"
 #include "connectionvalidator.h"
@@ -664,6 +665,8 @@ Application::~Application()
 
 void Application::setupAccountsAndFolders()
 {
+    // Initialize on the GUI thread before QML creates network managers.
+    static_cast<void>(CloudflareAccess::instance());
     _folderManager = FolderMan::instance();
     ConfigFile configFile;
     Migration::setPhase(Migration::Phase::SetupUsers);

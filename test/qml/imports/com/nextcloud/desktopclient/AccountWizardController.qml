@@ -22,6 +22,8 @@ QtObject {
     }
 
     property int currentStep: AccountWizardController.ServerStep
+    property QtObject cloudflareAccess: CloudflareAccessSettingsController {}
+    readonly property string cloudflareServerUrl: serverUrl
     property int syncMode: AccountWizardController.SelectiveSync
     property bool busy: false
     property bool authPolling: false

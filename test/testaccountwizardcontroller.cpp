@@ -3,12 +3,20 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "abstractnetworkjob.h"
+#include "accessmanager.h"
 #include "account.h"
+#include "cloudflareaccess.h"
+#include "cloudflareaccesssettingscontroller.h"
+#include "cloudflareaccesstestserver.h"
 #include "configfile.h"
 #include "folder.h"
+#include "gui/creds/flow2auth.h"
 #include "gui/localnetworkpermission.h"
 #include "gui/wizard/accountwizardcontroller.h"
 #include "managedsettingstestutils.h"
+#include "networkjobs.h"
+#include "syncenginetestutils.h"
 #include "theme.h"
 
 #ifdef BUILD_FILE_PROVIDER_MODULE
@@ -16,6 +24,13 @@
 #endif
 
 #include <QDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkReply>
+#include <QQmlComponent>
+#include <QQmlEngine>
+#include <QQuickItem>
+#include <QQuickWindow>
 #include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -30,6 +45,16 @@ namespace OCC {
 class AccountWizardControllerTestAccess
 {
 public:
+    static void connectServerCheck(AccountWizardController &controller, const AccountPtr &account, CheckServerJob &job)
+    {
+        controller._account = account;
+        QObject::connect(&job, &CheckServerJob::instanceNotFound, &controller, &AccountWizardController::slotNoServerFound);
+    }
+
+    static void foundServer(AccountWizardController &controller, const QUrl &url)
+    {
+        controller.slotFoundServer(url, {});
+    }
     static void setLocalNetworkPermissionDenied(AccountWizardController &controller, bool denied)
     {
         controller._localNetworkPermissionCheck = [denied](const QUrl &, QObject *, std::function<void(bool)> callback) {
@@ -91,6 +116,388 @@ class TestAccountWizardController : public QObject
     Q_OBJECT
 
 private Q_SLOTS:
+    void cloudflareDiscoveryResponses_data()
+    {
+        QTest::addColumn<bool>("enabled");
+        QTest::addColumn<QString>("outcome");
+        for (const auto enabled : {false, true}) {
+            for (const auto &outcome : {u"redirect"_s, u"html"_s, u"denied"_s, u"server-error"_s, u"success"_s}) {
+                const auto name = (enabled ? u"token-"_s : u"no-token-"_s) + outcome;
+                QTest::newRow(qPrintable(name)) << enabled << outcome;
+            }
+        }
+    }
+
+    void cloudflareDiscoveryResponses()
+    {
+        QFETCH(bool, enabled);
+        QFETCH(QString, outcome);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        CloudflareAccessTestServer server;
+        CloudflareAccessTestServer login;
+        QVERIFY(server.isListening() && login.isListening());
+        const auto base = server.baseUrl();
+        if (enabled) {
+            access.save(true, base, u"client.access"_s, u"secret"_s);
+        }
+        login.respond = [](const QByteArray &) {
+            return CloudflareAccessTestServer::response(200, "<html>Cloudflare Access</html>");
+        };
+        server.respond = [&](const QByteArray &) {
+            if (outcome == "redirect"_L1) {
+                return CloudflareAccessTestServer::response(302, {}, (login.baseUrl() + u"/cdn-cgi/access/login/server?meta=private"_s).toUtf8());
+            }
+            if (outcome == "html"_L1) {
+                return CloudflareAccessTestServer::response(200, "<html>Sign in</html>");
+            }
+            if (outcome == "denied"_L1 || outcome == "server-error"_L1) {
+                return CloudflareAccessTestServer::response(outcome == "denied"_L1 ? 403 : 503, "{}");
+            }
+            return CloudflareAccessTestServer::response(200, R"({"installed":true,"version":"33.0.0","versionstring":"33.0.0"})");
+        };
+        const auto account = Account::create();
+        account->setUrl(QUrl(base));
+        const auto manager = new AccessManager(nullptr, &access);
+        account->setCredentials(new FakeCredentials(manager));
+        disconnect(manager, &QNetworkAccessManager::sslErrors, account.data(), &Account::slotHandleSslErrors);
+        connect(manager, &QNetworkAccessManager::sslErrors, manager, [](QNetworkReply *reply) {
+            reply->ignoreSslErrors();
+        });
+        AccountWizardController controller(nullptr, &access);
+        AccountWizardControllerTestAccess::setLocalNetworkPermissionDenied(controller, false);
+        const auto job = new CheckServerJob(account, &controller);
+        AccountWizardControllerTestAccess::connectServerCheck(controller, account, *job);
+        QSignalSpy found(job, &CheckServerJob::instanceFound);
+        QSignalSpy failed(job, &CheckServerJob::instanceNotFound);
+        QSignalSpy secureFailure(&controller, &AccountWizardController::secureConnectionFailed);
+        job->start();
+        QTRY_COMPARE(found.count() + failed.count(), 1);
+        QCOMPARE(found.count(), outcome == "success"_L1 ? 1 : 0);
+        QCOMPARE(secureFailure.count(), 0);
+        QVERIFY(!controller.busy());
+        QCOMPARE(server.requests.size(), 1);
+        QVERIFY(server.requests.first().startsWith("GET /status.php "));
+        const auto headers = server.requests.first().toLower();
+        QCOMPARE(headers.contains("cf-access-client-id: client.access\r\n"), enabled);
+        QCOMPARE(headers.contains("cf-access-client-secret: secret\r\n"), enabled);
+        if (outcome == "redirect"_L1) {
+            QCOMPARE(login.requests.size(), 1);
+            QVERIFY(!login.requests.first().toLower().contains("cf-access-client-"));
+            QVERIFY(controller.errorText().contains("Cloudflare Access"_L1));
+            QVERIFY(controller.errorText().contains("Service Auth"_L1));
+            QVERIFY(!controller.errorText().contains("private"_L1));
+        }
+        if (outcome == "success"_L1) {
+            QVERIFY(controller.errorText().isEmpty());
+        } else {
+            QVERIFY(!controller.errorText().isEmpty());
+        }
+        QCOMPARE(access.enabled(), enabled);
+        if (enabled) {
+            QCOMPARE(access.clientSecret(), u"secret"_s);
+        }
+    }
+
+    void cloudflareLoginFlow_data()
+    {
+        QTest::addColumn<bool>("poll");
+        QTest::addColumn<QString>("outcome");
+        QTest::newRow("success") << false << u"success"_s;
+        for (const auto poll : {false, true}) {
+            for (const auto &outcome : {u"malformed"_s, u"denied"_s, u"server-error"_s, u"timeout"_s, u"cancel"_s}) {
+                const auto name = QString((poll ? u"poll-"_s : u"initiate-"_s) + outcome);
+                QTest::newRow(qPrintable(name)) << poll << outcome;
+            }
+        }
+    }
+
+    void cloudflareLoginFlow()
+    {
+        QFETCH(bool, poll);
+        QFETCH(QString, outcome);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto previous = ConfigFile().configPath();
+        const auto previousTimeout = AbstractNetworkJob::httpTimeout;
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+            AbstractNetworkJob::httpTimeout = previousTimeout;
+        });
+        ConfigFile::setConfDir(directory.path());
+        constexpr auto requestTimeoutMilliseconds = 2000;
+        AbstractNetworkJob::httpTimeout = requestTimeoutMilliseconds;
+        CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        CloudflareAccessTestServer server;
+        QVERIFY(server.isListening());
+        const auto base = server.baseUrl();
+        access.save(true, base, u"client"_s, u"secret"_s);
+        QVERIFY(access.ready());
+        const auto initiation = QJsonDocument(QJsonObject{{u"poll"_s, QJsonObject{{u"token"_s, u"poll-token"_s}, {u"endpoint"_s, QString(base + u"/poll"_s)}}},
+                                                          {u"login"_s, QString(base + u"/browser"_s)}})
+                                    .toJson(QJsonDocument::Compact);
+        const auto loggedIn =
+            QJsonDocument(QJsonObject{{u"server"_s, base}, {u"loginName"_s, u"alice"_s}, {u"appPassword"_s, u"app-password"_s}}).toJson(QJsonDocument::Compact);
+        server.respond = [&](const QByteArray &request) {
+            const auto isPoll = request.startsWith("POST /poll ");
+            if (isPoll == poll) {
+                if (outcome == "malformed"_L1) {
+                    return CloudflareAccessTestServer::response(200, "<html>Access</html>");
+                }
+                if (outcome == "denied"_L1 || outcome == "server-error"_L1) {
+                    return CloudflareAccessTestServer::response(outcome == "denied"_L1 ? 403 : 503, "{}");
+                }
+                if (outcome == "timeout"_L1 || outcome == "cancel"_L1) {
+                    return QByteArray{};
+                }
+            }
+            return CloudflareAccessTestServer::response(200, isPoll ? loggedIn : initiation);
+        };
+        const auto account = Account::create();
+        account->setUrl(QUrl(base));
+        const auto manager = new AccessManager(nullptr, &access);
+        account->setCredentials(new FakeCredentials(manager));
+        // The fixture uses an intentionally untrusted local certificate.
+        disconnect(manager, &QNetworkAccessManager::sslErrors, account.data(), &Account::slotHandleSslErrors);
+        connect(manager, &QNetworkAccessManager::sslErrors, manager, [](QNetworkReply *reply) {
+            reply->ignoreSslErrors();
+        });
+        QSignalSpy finished(manager, &QNetworkAccessManager::finished);
+        auto flow = std::make_unique<Flow2Auth>(account.data(), nullptr);
+        QSignalSpy result(flow.get(), &Flow2Auth::result);
+        flow->copyLinkToClipboard();
+        QTRY_COMPARE(server.requests.size(), 1);
+        if (poll || outcome == "success"_L1) {
+            QTRY_VERIFY(!flow->authorisationLink().isEmpty());
+            QCOMPARE(flow->authorisationLink(), QUrl(base + u"/browser"_s));
+            flow->slotPollNow();
+            QTRY_COMPARE(server.requests.size(), 2);
+            QVERIFY(server.requests.last().endsWith("token=poll-token"));
+        }
+        if (outcome == "cancel"_L1) {
+            flow.reset();
+            for (const auto socket : server.findChildren<QSslSocket *>()) {
+                socket->write(CloudflareAccessTestServer::response(200, poll ? loggedIn : initiation));
+                socket->disconnectFromHost();
+            }
+            QTRY_COMPARE(finished.count(), poll ? 2 : 1);
+            QCOMPARE(result.count(), 0);
+        } else {
+            QTRY_COMPARE(result.count(), 1);
+            QCOMPARE(result.first().first().value<Flow2Auth::Result>(), outcome == "success"_L1 ? Flow2Auth::LoggedIn : Flow2Auth::Error);
+            if (outcome == "success"_L1) {
+                QCOMPARE(result.first().at(2).toString(), u"alice"_s);
+                QCOMPARE(result.first().at(3).toString(), u"app-password"_s);
+            }
+        }
+        for (const auto &request : server.requests) {
+            const auto headers = request.toLower();
+            QVERIFY(headers.contains("cf-access-client-id: client\r\n"));
+            QVERIFY(headers.contains("cf-access-client-secret: secret\r\n"));
+        }
+        QVERIFY(access.enabled());
+        QCOMPARE(access.clientSecret(), u"secret"_s);
+    }
+
+    void cloudflareDialogUsesProductionController()
+    {
+        Q_INIT_RESOURCE(resources);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        AccountWizardController controller(nullptr, &access);
+        controller.setServerUrl(u"cloud.example/nextcloud"_s);
+        QQmlEngine engine;
+        engine.addImportPath(QFINDTESTDATA("qml/imports"));
+        engine.addImportPath(QFINDTESTDATA("../theme"));
+        QQmlComponent component(&engine, QUrl(u"qrc:/qml/src/gui/wizard/qml/AccountWizardWindow.qml"_s));
+        QTRY_VERIFY2(component.isReady(), qPrintable(component.errorString()));
+        auto window = std::unique_ptr<QQuickWindow>(
+            qobject_cast<QQuickWindow *>(component.createWithInitialProperties({{u"controller"_s, QVariant::fromValue(static_cast<QObject *>(&controller))}})));
+        QVERIFY2(window, qPrintable(component.errorString()));
+        window->show();
+        const auto dialog = window->findChild<QObject *>(u"cloudflareAccessDialog"_s);
+        QVERIFY(dialog);
+        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        QVERIFY(!dialog->findChild<QObject *>(u"cloudflareAccessServerUrl"_s));
+        const auto server = dialog->findChild<QObject *>(u"cloudflareAccessServer"_s);
+        QVERIFY(server);
+        QCOMPARE(server->property("text").toString(), u"https://cloud.example/nextcloud"_s);
+        const auto toggle = dialog->findChild<QQuickItem *>(u"cloudflareAccessEnabled"_s);
+        QVERIFY(toggle);
+        const auto point = toggle->mapToScene(QPointF(toggle->width() / 2, toggle->height() / 2)).toPoint();
+        QTest::mouseClick(window.get(), Qt::LeftButton, Qt::NoModifier, point);
+        QTRY_VERIFY(toggle->property("checked").toBool());
+        const auto apply = dialog->findChild<QObject *>(u"cloudflareAccessApply"_s);
+        QVERIFY(apply);
+        QVERIFY(QMetaObject::invokeMethod(apply, "clicked"));
+        QVERIFY(dialog->property("visible").toBool());
+        const auto error = dialog->findChild<QObject *>(u"cloudflareAccessError"_s);
+        QVERIFY(error);
+        QVERIFY(!error->property("text").toString().isEmpty());
+        dialog->findChild<QObject *>(u"cloudflareAccessClientId"_s)->setProperty("text", u"client"_s);
+        dialog->findChild<QObject *>(u"cloudflareAccessClientSecret"_s)->setProperty("text", u"secret"_s);
+        QVERIFY(QMetaObject::invokeMethod(apply, "clicked"));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QVERIFY(access.enabled());
+        QCOMPARE(access.serverUrl(), QUrl(u"https://cloud.example"_s));
+        QCOMPARE(access.clientSecret(), "secret"_L1);
+
+        controller.setServerUrl(u"https://cloud.example:443/another-path"_s);
+        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        QVERIFY(toggle->property("checked").toBool());
+        QCOMPARE(dialog->findChild<QObject *>(u"cloudflareAccessClientSecret"_s)->property("text").toString(), u"secret"_s);
+        controller.setServerUrl(u"https://other.example"_s);
+        QCOMPARE(server->property("text").toString(), u"https://other.example"_s);
+        QVERIFY(!toggle->property("checked").toBool());
+        QVERIFY(dialog->findChild<QObject *>(u"cloudflareAccessClientSecret"_s)->property("text").toString().isEmpty());
+        QVERIFY(!apply->property("enabled").toBool());
+        QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
+        QVERIFY(access.enabled());
+        QCOMPARE(access.serverUrl(), QUrl(u"https://cloud.example"_s));
+    }
+
+    void cloudflareUsesMainServerAddress_data()
+    {
+        QTest::addColumn<QString>("input");
+        QTest::addColumn<QString>("normalized");
+        QTest::addColumn<bool>("configured");
+        QTest::addColumn<bool>("valid");
+        QTest::newRow("no-scheme") << u" cloud.example/nextcloud "_s << u"https://cloud.example/nextcloud"_s << true << true;
+        QTest::newRow("default-port") << u"https://CLOUD.example:443/path"_s << u"https://CLOUD.example:443/path"_s << true << true;
+        QTest::newRow("other-server") << u"https://other.example"_s << u"https://other.example"_s << false << true;
+        QTest::newRow("other-port") << u"https://cloud.example:8443"_s << u"https://cloud.example:8443"_s << false << true;
+        QTest::newRow("http") << u"http://cloud.example"_s << u"http://cloud.example"_s << false << false;
+        QTest::newRow("empty") << QString{} << QString{} << false << false;
+        QTest::newRow("embedded-credentials") << u"https://user:password@cloud.example"_s << u"https://user:password@cloud.example"_s << true << false;
+        QTest::newRow("query") << u"https://cloud.example?key=value"_s << u"https://cloud.example?key=value"_s << true << false;
+        QTest::newRow("fragment") << u"https://cloud.example#fragment"_s << u"https://cloud.example#fragment"_s << true << false;
+    }
+
+    void cloudflareUsesMainServerAddress()
+    {
+        QFETCH(QString, input);
+        QFETCH(QString, normalized);
+        QFETCH(bool, configured);
+        QFETCH(bool, valid);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        access.save(true, u"https://cloud.example"_s, u"client"_s, u"secret"_s);
+        AccountWizardController wizard(nullptr, &access);
+        QSignalSpy changed(&wizard, &AccountWizardController::serverUrlChanged);
+        wizard.setServerUrl(input);
+        QCOMPARE(changed.count(), input.isEmpty() ? 0 : 1);
+        QCOMPARE(wizard.cloudflareServerUrl(), normalized);
+        const auto settings = qobject_cast<CloudflareAccessSettingsController *>(wizard.cloudflareAccess());
+        QVERIFY(settings);
+        QCOMPARE(settings->isConfiguredForServer(wizard.cloudflareServerUrl()), configured);
+        QSignalSpy saved(settings, &CloudflareAccessSettingsController::saved);
+        settings->save(true, wizard.cloudflareServerUrl(), u"client"_s, u"secret"_s);
+        QCOMPARE(saved.count(), 1);
+        QCOMPARE(saved.first().first().toBool(), valid);
+        QCOMPARE(settings->error().isEmpty(), valid);
+        QCOMPARE(access.serverUrl(), valid ? CloudflareAccess::origin(QUrl(normalized)) : QUrl(u"https://cloud.example"_s));
+    }
+
+    void cloudflareConfigurationOutlivesWizardCancellation()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        auto entries = QHash<QString, QByteArray>();
+        auto finishSave = std::function<void()>();
+        CloudflareAccess access(nullptr, [&](const QString &key, const std::optional<QByteArray> &data, CloudflareAccess::Completion done) {
+            if (data && !data->isEmpty()) {
+                finishSave = [&, key, data, done] {
+                    entries.insert(key, *data);
+                    done({}, {});
+                };
+            } else {
+                done(entries.value(key), {});
+            }
+        });
+        {
+            AccountWizardController wizard(nullptr, &access);
+            const auto controller = qobject_cast<CloudflareAccessSettingsController *>(wizard.cloudflareAccess());
+            QVERIFY(controller);
+            controller->save(true, "https://cloud.example"_L1, "client"_L1, "secret"_L1);
+            QVERIFY(access.busy());
+            QSignalSpy finished(&wizard, &AccountWizardController::finished);
+            wizard.cancel();
+            QCOMPARE(finished.count(), 1);
+        }
+        QVERIFY(finishSave);
+        finishSave();
+        QVERIFY(access.enabled());
+        CloudflareAccess restored(nullptr, [&](const QString &key, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done(entries.value(key), {});
+        });
+        QVERIFY(restored.enabled());
+        QCOMPARE(restored.clientSecret(), "secret"_L1);
+    }
+
+    void cloudflareUnavailableCredentialsPreventServerDiscovery()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        access.save(true, "https://cloud.example"_L1, "client"_L1, "secret"_L1);
+        CloudflareAccess unavailable(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion) { });
+        AccountWizardController wizard(nullptr, &unavailable);
+        wizard.setServerUrl("https://cloud.example"_L1);
+        wizard.submitServerUrl();
+        QVERIFY(!wizard.busy());
+        QVERIFY(!wizard.errorText().isEmpty());
+        QCOMPARE(wizard.currentStep(), AccountWizardController::ServerStep);
+        AccountWizardController redirected(nullptr, &unavailable);
+        AccountWizardControllerTestAccess::setAccountUrl(redirected, QUrl("http://cloud.example"_L1));
+        AccountWizardControllerTestAccess::foundServer(redirected, QUrl("https://cloud.example"_L1));
+        QVERIFY(!redirected.busy());
+        QVERIFY(!redirected.errorText().isEmpty());
+        QVERIFY(redirected.authStatusText().isEmpty());
+        QSignalSpy finished(&redirected, &AccountWizardController::finished);
+        redirected.finish();
+        QCOMPARE(finished.count(), 0);
+    }
+
     void initTestCase()
     {
         QStandardPaths::setTestModeEnabled(true);
@@ -306,7 +713,7 @@ private Q_SLOTS:
         QCOMPARE(controller.errorText(), LocalNetworkPermission::deniedError());
     }
 
-    void otherServerFailureOffersSecureConnectionRecovery()
+    void serverTimeoutDoesNotOfferSecureConnectionRecovery()
     {
         AccountWizardController controller;
         const auto serverUrl = QUrl(QStringLiteral("https://cloud.example"));
@@ -319,10 +726,58 @@ private Q_SLOTS:
                                           Qt::DirectConnection,
                                           Q_ARG(QUrl, serverUrl)));
 
-        QCOMPARE(recoverySpy.count(), 1);
-        const auto arguments = recoverySpy.takeFirst();
-        QCOMPARE(arguments.at(0).toString(), serverUrl.host());
-        QCOMPARE(arguments.at(1).toBool(), false);
+        QCOMPARE(recoverySpy.count(), 0);
+        QVERIFY(!controller.errorText().isEmpty());
+    }
+
+    void secureConnectionRecoveryRequiresTlsFailure_data()
+    {
+        QTest::addColumn<QNetworkReply::NetworkError>("error");
+        QTest::addColumn<bool>("protectedServer");
+        QTest::addColumn<bool>("hsts");
+        QTest::newRow("tls") << QNetworkReply::SslHandshakeFailedError << false << false;
+        QTest::newRow("tls-hsts") << QNetworkReply::SslHandshakeFailedError << false << true;
+        QTest::newRow("tls-protected") << QNetworkReply::SslHandshakeFailedError << true << false;
+        QTest::newRow("dns") << QNetworkReply::HostNotFoundError << false << false;
+        QTest::newRow("connection") << QNetworkReply::ConnectionRefusedError << false << false;
+        QTest::newRow("timeout") << QNetworkReply::TimeoutError << false << false;
+        QTest::newRow("http") << QNetworkReply::ContentAccessDenied << false << false;
+    }
+
+    void secureConnectionRecoveryRequiresTlsFailure()
+    {
+        QFETCH(QNetworkReply::NetworkError, error);
+        QFETCH(bool, protectedServer);
+        QFETCH(bool, hsts);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        const auto server = QUrl(u"https://cloud.example"_s);
+        if (protectedServer) {
+            access.save(true, server.toString(), u"client.access"_s, u"secret"_s);
+        }
+        AccountWizardController controller(nullptr, &access);
+        AccountWizardControllerTestAccess::setAccountUrl(controller, server);
+        AccountWizardControllerTestAccess::setLocalNetworkPermissionDenied(controller, false);
+        FakeErrorReply reply(QNetworkAccessManager::GetOperation, QNetworkRequest(server), nullptr, 0);
+        reply.setError(error, u"Test connection error"_s);
+        if (hsts) {
+            reply.setRawHeader("Strict-Transport-Security", "max-age=31536000");
+        }
+        QSignalSpy recovery(&controller, &AccountWizardController::secureConnectionFailed);
+        QVERIFY(QMetaObject::invokeMethod(&controller, "slotNoServerFound", Qt::DirectConnection, Q_ARG(QNetworkReply *, &reply)));
+        QCOMPARE(recovery.count(), error == QNetworkReply::SslHandshakeFailedError ? 1 : 0);
+        if (!recovery.isEmpty()) {
+            QCOMPARE(recovery.first().first().toString(), server.host());
+            QCOMPARE(recovery.first().at(1).toBool(), !hsts && !protectedServer);
+        }
     }
     void invalidServerUrlStaysOnServerStep()
     {

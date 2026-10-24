@@ -8,6 +8,8 @@
 #include "account.h"
 #include "accountmanager.h"
 #include "clientproxy.h"
+#include "cloudflareaccess.h"
+#include "cloudflareaccesssettingscontroller.h"
 #include "common/utility.h"
 #include "common/vfs.h"
 #include "configfile.h"
@@ -94,8 +96,10 @@ bool localFolderContainsData(const QString &localSyncFolder)
 
 }
 
-AccountWizardController::AccountWizardController(QObject *parent)
+AccountWizardController::AccountWizardController(QObject *parent, CloudflareAccess *cloudflareAccess)
     : QObject(parent)
+    , _cloudflareAccess(cloudflareAccess ? cloudflareAccess : CloudflareAccess::instance())
+    , _cloudflareAccessSettings(new CloudflareAccessSettingsController(this, _cloudflareAccess))
     , _localNetworkPermissionCheck(LocalNetworkPermission::checkDeniedForConnection)
     , _localSyncFolderPicker([this](const QString &caption, const QString &startFolder, std::function<void(const QString &, const QByteArray &)> completion) {
         pickLocalSyncFolder(caption, startFolder, std::move(completion));
@@ -120,6 +124,11 @@ AccountWizardController::AccountWizardController(QObject *parent)
 }
 
 AccountWizardController::~AccountWizardController() = default;
+
+QObject *AccountWizardController::cloudflareAccess() const
+{
+    return _cloudflareAccessSettings;
+}
 
 void AccountWizardController::setWindow(QWindow *window)
 {
@@ -195,6 +204,11 @@ AccountWizardController::Step AccountWizardController::currentStep() const
 QString AccountWizardController::serverUrl() const
 {
     return _serverUrl;
+}
+
+QString AccountWizardController::cloudflareServerUrl() const
+{
+    return normalizeServerUrlInput(_serverUrl);
 }
 
 void AccountWizardController::setServerUrl(const QString &serverUrl)
@@ -739,8 +753,28 @@ void AccountWizardController::submitServerUrl()
     setBasicAuthPassword({});
     normalizedServerUrl = normalizeServerUrlInput(_serverUrl, _account->davPath());
     const auto accountUrl = QUrl(normalizedServerUrl, QUrl::StrictMode);
+    if (const auto error = cloudflareAccessError(accountUrl); !error.isEmpty()) {
+        setErrorText(error);
+        return;
+    }
     setServerUrl(accountUrl.toString());
     startServerCheck(accountUrl);
+}
+
+QString AccountWizardController::cloudflareAccessError(const QUrl &url) const
+{
+    if (!_cloudflareAccess->protects(url)) {
+        return {};
+    }
+    if (!_cloudflareAccess->ready()) {
+        return _cloudflareAccess->error().isEmpty() ? tr("Cloudflare Access credentials are still loading. Please try again.") : _cloudflareAccess->error();
+    }
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    if (isUsingFileProvider()) {
+        return tr("Cloudflare Access does not support macOS File Provider. Switch to classic sync before adding this server.");
+    }
+#endif
+    return {};
 }
 
 void AccountWizardController::submitBasicAuth()
@@ -902,6 +936,14 @@ void AccountWizardController::slotFoundServer(const QUrl &url, const QJsonObject
         setServerUrl(url.toString());
     }
 
+    if (const auto error = cloudflareAccessError(url); !error.isEmpty()) {
+        setBusy(false);
+        setAuthStatusText({});
+        setErrorText(error);
+        setCurrentStep(ServerStep);
+        return;
+    }
+
     setServerDisplayName(url.host());
     setAuthStatusText(tr("Preparing browser login") + QStringLiteral("…"));
 
@@ -925,7 +967,14 @@ void AccountWizardController::slotNoServerFound(QNetworkReply *reply)
     QString message;
     if (!_account->url().isValid()) {
         message = tr("Invalid URL");
+    } else if (reply && reply->url().path().startsWith("/cdn-cgi/access/login/"_L1)) {
+        message =
+            tr("Cloudflare Access redirected the connection to its sign-in page. Enable Cloudflare Access and enter the complete Client ID and Client "
+               "Secret. Check that the application's Service Auth policy allows this service token.");
+    } else if (reply && reply->error() == QNetworkReply::NoError) {
+        message = tr("The server did not return a valid Nextcloud response. Check the server address and any access controls protecting it.");
     } else {
+        //: %1 is the application name, %2 is the Nextcloud server URL, and %3 describes the connection error.
         message = tr("Failed to connect to %1 at %2:\n%3")
             .arg(Theme::instance()->appNameGUI(),
                  _account->url().toString(),
@@ -936,7 +985,7 @@ void AccountWizardController::slotNoServerFound(QNetworkReply *reply)
     setErrorText(message);
     _account->resetRejectedCertificates();
 
-    handleFailedServerConnection(_account->url(), checkDowngradeAdvised(reply));
+    handleFailedServerConnection(_account->url(), checkDowngradeAdvised(reply), reply && reply->error() == QNetworkReply::SslHandshakeFailedError);
 }
 
 void AccountWizardController::slotNoServerFoundTimeout(const QUrl &url)
@@ -944,7 +993,7 @@ void AccountWizardController::slotNoServerFoundTimeout(const QUrl &url)
     setBusy(false);
     setErrorText(tr("Timeout while trying to connect to %1 at %2.")
         .arg(Utility::escape(Theme::instance()->appNameGUI()), Utility::escape(url.toString())));
-    handleFailedServerConnection(url, false);
+    handleFailedServerConnection(url, false, false);
 }
 
 void AccountWizardController::slotDetermineAuthType()
@@ -1312,6 +1361,11 @@ void AccountWizardController::finish()
 
     if (!_account) {
         Q_EMIT finished(QDialog::Rejected);
+        return;
+    }
+
+    if (const auto error = cloudflareAccessError(_account->url()); !error.isEmpty()) {
+        setErrorText(error);
         return;
     }
 
@@ -2032,9 +2086,9 @@ void AccountWizardController::discardFlow2Auth()
     setAuthPolling(false);
 }
 
-void AccountWizardController::handleFailedServerConnection(const QUrl &url, bool retryHttpOnly)
+void AccountWizardController::handleFailedServerConnection(const QUrl &url, bool retryHttpOnly, bool secureConnectionFailure)
 {
-    _localNetworkPermissionCheck(url, this, [this, url, retryHttpOnly](bool denied) {
+    _localNetworkPermissionCheck(url, this, [this, url, retryHttpOnly, secureConnectionFailure](bool denied) {
         if (_account && _account->url() != url) {
             return;
         }
@@ -2044,7 +2098,9 @@ void AccountWizardController::handleFailedServerConnection(const QUrl &url, bool
             return;
         }
 
-        handleSecureConnectionFailure(nullptr, retryHttpOnly);
+        if (secureConnectionFailure) {
+            handleSecureConnectionFailure(nullptr, retryHttpOnly);
+        }
     });
 }
 
@@ -2154,7 +2210,7 @@ void AccountWizardController::clearClientCertificateInput()
 
 bool AccountWizardController::checkDowngradeAdvised(QNetworkReply *reply) const
 {
-    if (!reply || reply->url().scheme() != "https"_L1) {
+    if (!reply || reply->url().scheme() != "https"_L1 || _cloudflareAccess->protects(reply->url())) {
         return false;
     }
 

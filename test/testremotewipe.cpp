@@ -13,23 +13,59 @@
 #include "remotewipe.h"
 #include "accountmanager.h"
 
-#include "folderman.h"
 #include "account.h"
 #include "accountstate.h"
+#include "cloudflareaccess.h"
 #include "configfile.h"
+#include "folderman.h"
 #include "logger.h"
 
 #include "testhelper.h"
 
 #include "syncenginetestutils.h"
+#include <QScopeGuard>
 
 using namespace OCC;
+using namespace Qt::StringLiterals;
 
 class TestRemoteWipe: public QObject
 {
     Q_OBJECT
 
 private Q_SLOTS:
+    void cloudflareCredentialsMustBeReadyBeforeCheckingForWipe()
+    {
+        auto directory = QTemporaryDir();
+        QVERIFY(directory.isValid());
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        access.save(true, "https://cloud.example"_L1, "client"_L1, "secret"_L1);
+        CloudflareAccess loading(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion) { });
+        QVERIFY(!loading.ready());
+
+        FakeFolder folder{FileInfo::A12_B12_C12_S12()};
+        const auto account = folder.account();
+        account->setUrl(QUrl("https://cloud.example"_L1));
+        const auto manager = AccountManager::instance();
+        const auto state = manager->addAccount(account);
+        const auto remove = qScopeGuard([&] {
+            manager->removeAccountState(state);
+        });
+        RemoteWipe wipe(account, nullptr, &loading);
+        wipe.startCheckJobWithAppPassword(u"nextcloud-app-password"_s);
+        QVERIFY(wipe._networkReplyCheck);
+        QCOMPARE(wipe._networkReplyCheck->error(), QNetworkReply::ContentAccessDenied);
+        QSignalSpy finished(wipe._networkReplyCheck, &QNetworkReply::finished);
+        QTRY_COMPARE(finished.count(), 1);
+        QVERIFY(!account->isRemoteWipeRequested_HACK());
+    }
+
     void initTestCase()
     {
         OCC::Logger::instance()->setLogFlush(true);

@@ -14,11 +14,13 @@ class TestRemoteWipe;
 
 namespace OCC {
 
+class CloudflareAccess;
+
 class RemoteWipe : public QObject
 {
     Q_OBJECT
 public:
-    explicit RemoteWipe(AccountPtr account, QObject *parent = nullptr);
+    explicit RemoteWipe(AccountPtr account, QObject *parent = nullptr, CloudflareAccess *cloudflareAccess = nullptr);
 
 Q_SIGNALS:
     /**

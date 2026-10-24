@@ -43,12 +43,7 @@ void logHttp(const QByteArray &verb, const QString &url, const QByteArray &id, c
     stream << " " << url << " Header: { ";
     for (const auto &it : header) {
         stream << it.first << ": ";
-        if (it.first == "Authorization") {
-            stream << (it.second.startsWith("Bearer ") ? "Bearer" : "Basic");
-            stream << " [redacted]";
-        } else {
-            stream << it.second;
-        }
+        stream << OCC::HttpLogger::redactedHeaderValue(it.first, it.second);
         stream << ", ";
     }
     stream << "} Data: [";
@@ -76,6 +71,17 @@ void logHttp(const QByteArray &verb, const QString &url, const QByteArray &id, c
 
 
 namespace OCC {
+
+QByteArray HttpLogger::redactedHeaderValue(const QByteArray &name, const QByteArray &value)
+{
+    if (name.compare("CF-Access-Client-Id", Qt::CaseInsensitive) == 0 || name.compare("CF-Access-Client-Secret", Qt::CaseInsensitive) == 0) {
+        return "[redacted]";
+    }
+    if (name.compare("Authorization", Qt::CaseInsensitive) == 0) {
+        return value.startsWith("Bearer ") ? "Bearer [redacted]" : "Basic [redacted]";
+    }
+    return value;
+}
 
 void HttpLogger::logRequest(QNetworkReply *reply, QNetworkAccessManager::Operation operation, QIODevice *device)
 {
