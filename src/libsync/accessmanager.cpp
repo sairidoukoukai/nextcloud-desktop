@@ -32,7 +32,7 @@ AccessManager::AccessManager(QObject *parent, CloudflareAccess *cloudflareAccess
     : QNetworkAccessManager(parent)
     , _cloudflareAccess(cloudflareAccess ? cloudflareAccess : CloudflareAccess::instance())
 {
-    setCookieJar(new CookieJar);
+    setCookieJar(new CookieJar(this, false));
 
     // Enable HSTS (HTTP Strict Transport Security) for all connections
     enableStrictTransportSecurityStore(true);
@@ -85,6 +85,7 @@ QNetworkReply *AccessManager::createRequest(QNetworkAccessManager::Operation op,
     };
 
     QNetworkRequest newRequest(request);
+    newRequest.setAttribute(NativeCredentialEpochAttribute, QVariant::fromValue(_nativeCredentialEpoch));
     if (const auto error = _cloudflareAccess->prepareRequest(newRequest); !error.isEmpty()) {
         return new CloudflareAccessReply(op, newRequest, error, this);
     }

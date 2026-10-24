@@ -14,6 +14,7 @@
 #include "gui/creds/flow2auth.h"
 #include "gui/localnetworkpermission.h"
 #include "gui/wizard/accountwizardcontroller.h"
+#include "httplogger.h"
 #include "managedsettingstestutils.h"
 #include "networkjobs.h"
 #include "syncenginetestutils.h"
@@ -233,8 +234,8 @@ private Q_SLOTS:
             AbstractNetworkJob::httpTimeout = previousTimeout;
         });
         ConfigFile::setConfDir(directory.path());
-        constexpr auto requestTimeoutMilliseconds = 2000;
-        AbstractNetworkJob::httpTimeout = requestTimeoutMilliseconds;
+        constexpr auto requestTimeoutSeconds = 1;
+        AbstractNetworkJob::httpTimeout = requestTimeoutSeconds;
         CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
             done({}, {});
         });
@@ -273,6 +274,10 @@ private Q_SLOTS:
             reply->ignoreSslErrors();
         });
         QSignalSpy finished(manager, &QNetworkAccessManager::finished);
+        connect(manager, &QNetworkAccessManager::finished, &access, [](QNetworkReply *reply) {
+            QVERIFY(reply->request().attribute(HttpLogger::SensitiveBodyAttribute).toBool());
+            QVERIFY(!HttpLogger::bodyLoggingAllowed(reply->request()));
+        });
         auto flow = std::make_unique<Flow2Auth>(account.data(), nullptr);
         QSignalSpy result(flow.get(), &Flow2Auth::result);
         flow->copyLinkToClipboard();
@@ -381,11 +386,11 @@ private Q_SLOTS:
         QTest::addColumn<QString>("input");
         QTest::addColumn<QString>("normalized");
         QTest::addColumn<bool>("configured");
-        QTest::addColumn<bool>("valid");
+        QTest::addColumn<bool>("accepted");
         QTest::newRow("no-scheme") << u" cloud.example/nextcloud "_s << u"https://cloud.example/nextcloud"_s << true << true;
         QTest::newRow("default-port") << u"https://CLOUD.example:443/path"_s << u"https://CLOUD.example:443/path"_s << true << true;
-        QTest::newRow("other-server") << u"https://other.example"_s << u"https://other.example"_s << false << true;
-        QTest::newRow("other-port") << u"https://cloud.example:8443"_s << u"https://cloud.example:8443"_s << false << true;
+        QTest::newRow("other-server") << u"https://other.example"_s << u"https://other.example"_s << false << false;
+        QTest::newRow("other-port") << u"https://cloud.example:8443"_s << u"https://cloud.example:8443"_s << false << false;
         QTest::newRow("http") << u"http://cloud.example"_s << u"http://cloud.example"_s << false << false;
         QTest::newRow("empty") << QString{} << QString{} << false << false;
         QTest::newRow("embedded-credentials") << u"https://user:password@cloud.example"_s << u"https://user:password@cloud.example"_s << true << false;
@@ -398,7 +403,7 @@ private Q_SLOTS:
         QFETCH(QString, input);
         QFETCH(QString, normalized);
         QFETCH(bool, configured);
-        QFETCH(bool, valid);
+        QFETCH(bool, accepted);
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const auto previous = ConfigFile().configPath();
@@ -421,9 +426,9 @@ private Q_SLOTS:
         QSignalSpy saved(settings, &CloudflareAccessSettingsController::saved);
         settings->save(true, wizard.cloudflareServerUrl(), u"client"_s, u"secret"_s);
         QCOMPARE(saved.count(), 1);
-        QCOMPARE(saved.first().first().toBool(), valid);
-        QCOMPARE(settings->error().isEmpty(), valid);
-        QCOMPARE(access.serverUrl(), valid ? CloudflareAccess::origin(QUrl(normalized)) : QUrl(u"https://cloud.example"_s));
+        QCOMPARE(saved.first().first().toBool(), accepted);
+        QCOMPARE(settings->error().isEmpty(), accepted);
+        QCOMPARE(access.serverUrl(), accepted ? CloudflareAccess::origin(QUrl(normalized)) : QUrl(u"https://cloud.example"_s));
     }
 
     void cloudflareConfigurationOutlivesWizardCancellation()

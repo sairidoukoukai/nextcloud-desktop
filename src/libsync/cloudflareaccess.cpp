@@ -131,6 +131,7 @@ QString CloudflareAccess::prepareRequest(QNetworkRequest &request) const
     headers.removeAll("CF-Access-Client-Id"_L1);
     headers.removeAll("CF-Access-Client-Secret"_L1);
     request.setHeaders(headers);
+    request.setAttribute(ConfigurationEpochAttribute, {});
     if (!protects(request.url())) {
         return {};
     }
@@ -139,11 +140,19 @@ QString CloudflareAccess::prepareRequest(QNetworkRequest &request) const
     }
     request.setRawHeader("CF-Access-Client-Id"_ba, _clientId.toLatin1());
     request.setRawHeader("CF-Access-Client-Secret"_ba, _clientSecret.toLatin1());
+    request.setAttribute(ConfigurationEpochAttribute, QVariant::fromValue(_generation));
     const auto policy = request.attribute(QNetworkRequest::RedirectPolicyAttribute);
     if (policy.isValid() && policy.toInt() != QNetworkRequest::ManualRedirectPolicy) {
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::SameOriginRedirectPolicy);
     }
     return {};
+}
+
+bool CloudflareAccess::matchesCurrentRequest(const QNetworkRequest &request) const
+{
+    const auto lock = QMutexLocker(&_mutex);
+    return _enabled && _ready && !_busy && origin(request.url()) == _serverUrl && request.attribute(ConfigurationEpochAttribute).isValid()
+        && request.attribute(ConfigurationEpochAttribute).toULongLong() == _generation;
 }
 
 QString CloudflareAccess::credentialKey() const
@@ -257,6 +266,12 @@ void CloudflareAccess::save(bool enabled, const QString &url, const QString &id,
         return;
     }
     const auto server = enabled ? origin(QUrl(url.trimmed())) : _serverUrl;
+    if (enabled && _enabled && server != _serverUrl) {
+        _error = tr("Only one server can use Cloudflare Access in this profile. Disable the current server's Cloudflare Access setting before replacing it.");
+        Q_EMIT changed();
+        Q_EMIT saved(false);
+        return;
+    }
     if (enabled && check) {
         if (const auto compatibilityError = check(server); !compatibilityError.isEmpty()) {
             _error = compatibilityError;

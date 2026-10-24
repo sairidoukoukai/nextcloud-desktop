@@ -6,6 +6,7 @@
 #include "remotewipe.h"
 #include "accessmanager.h"
 #include "folderman.h"
+#include "httplogger.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -59,6 +60,7 @@ void RemoteWipe::startCheckJobWithAppPassword(QString pwd)
     QUrl requestUrl = Utility::concatUrlPath(_account->url().toString(),
                                              QLatin1String("/index.php/core/wipe/check"));
     QNetworkRequest request;
+    request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                       "application/x-www-form-urlencoded");
     request.setUrl(requestUrl);
@@ -159,6 +161,7 @@ void RemoteWipe::notifyServerSuccess()
     QUrl requestUrl = Utility::concatUrlPath(_account->url().toString(),
                                                 QLatin1String("/index.php/core/wipe/success"));
     QNetworkRequest request;
+    request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                         "application/x-www-form-urlencoded");
     request.setUrl(requestUrl);

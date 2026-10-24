@@ -9,21 +9,30 @@ The desktop client's classic sync engine can use a Cloudflare Access service
 token to reach a protected Nextcloud server. Nextcloud authentication is still
 required.
 
-In **Settings → Advanced**, enable **Cloudflare Access**, enter the HTTPS server
-URL and the service token's **Client ID** and **Client Secret**, then select
-**Apply**. The account setup wizard also offers **Cloudflare Access…** before
-checking the server address. Both places edit the same configuration. Applying
-this configuration saves it even if account setup is subsequently cancelled.
+For a new account, enter the HTTPS server address in the account setup wizard,
+then select **Cloudflare Access…** before continuing to the server check. Enable
+the setting, enter the service token's **Client ID** and **Client Secret**, and
+select **Apply**. For an existing account, open **Settings → Advanced**, select
+the account under **Cloudflare Access**, and update its credentials there.
+Both places edit the same configuration. Applying this configuration saves it
+even if account setup is subsequently cancelled.
 
 The configuration applies to one server origin per local client profile. All
 accounts on that hostname and HTTPS port share it. A path in the entered URL
 is removed: the headers apply to every path on that origin. Different hosts,
 ports, and unencrypted connections receive no service-token headers.
+To replace the configured server, first disable its Cloudflare Access setting
+and select **Apply**. Enabling a different server then replaces the saved pair.
 
 The token pair is stored in the operating system's credential store. The
 configuration file contains the server origin, enabled flag, and a reference
 to the credential-store entry. Disabling Cloudflare Access retains the token
 for later use and stops adding its headers to new requests.
+
+The client rejects `CF_Authorization` cookies so that a cached Access session
+cannot outlive a service-token change. Normal Nextcloud cookies are retained.
+HTTP diagnostics redact cookies and service-token headers. Request and response
+bodies are omitted for service-token requests and credential exchanges.
 
 ## Server configuration
 
@@ -42,6 +51,14 @@ If access is denied, check the token's expiry, Client ID and Client Secret,
 and its authorization in the Access application's policy. A server error can
 also originate from Nextcloud itself. Token rotation requires replacing the
 credentials in Advanced settings and selecting Apply.
+
+Keep the Nextcloud `status.php` endpoint under the same Access policy as the
+server's DAV and API paths. When an authenticated request returns HTTP 401, the
+client checks that exact status endpoint using a fresh connection with the
+service token. This check sends no Nextcloud credentials or cookies. A failed
+check preserves the native login so a service-token update can restore access.
+A valid installed-server response allows the normal Nextcloud reauthentication
+flow. Redirected, cached or malformed status responses cannot trigger it.
 
 ## Supported sync engines
 

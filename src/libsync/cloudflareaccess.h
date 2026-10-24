@@ -24,6 +24,7 @@ class OWNCLOUDSYNC_EXPORT CloudflareAccess : public QObject
     Q_OBJECT
 
 public:
+    static constexpr auto ConfigurationEpochAttribute = static_cast<QNetworkRequest::Attribute>(QNetworkRequest::User + 2);
     using Completion = std::function<void(const QByteArray &, const QString &)>;
     // Complete on the owning thread. An absent value reads, a nonempty value writes, and an empty value deletes.
     using CredentialStore = std::function<void(const QString &, const std::optional<QByteArray> &, Completion)>;
@@ -44,6 +45,7 @@ public:
     [[nodiscard]] static QString validate(bool enabled, const QString &url, const QString &id, const QString &secret);
     // Removes old token headers, then applies the current configuration. An error prevents sending the request.
     [[nodiscard]] QString prepareRequest(QNetworkRequest &request) const;
+    [[nodiscard]] bool matchesCurrentRequest(const QNetworkRequest &request) const;
 
     void load();
     void save(bool enabled, const QString &url, const QString &id, const QString &secret, ConfigurationCheck check = {});

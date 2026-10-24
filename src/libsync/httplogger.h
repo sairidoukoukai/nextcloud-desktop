@@ -11,6 +11,8 @@
 
 namespace OCC {
 namespace HttpLogger {
+inline constexpr auto SensitiveBodyAttribute = static_cast<QNetworkRequest::Attribute>(QNetworkRequest::User + 1);
+bool OWNCLOUDSYNC_EXPORT bodyLoggingAllowed(const QNetworkRequest &request);
 QByteArray OWNCLOUDSYNC_EXPORT redactedHeaderValue(const QByteArray &name, const QByteArray &value);
 void OWNCLOUDSYNC_EXPORT logRequest(QNetworkReply *reply, QNetworkAccessManager::Operation operation, QIODevice *device);
 

@@ -9,6 +9,7 @@
 #include "account.h"
 #include "config.h"
 #include "guiutility.h"
+#include "httplogger.h"
 #include "networkjobs.h"
 #include "theme.h"
 
@@ -79,6 +80,7 @@ void Flow2Auth::fetchNewToken(const TokenAction action)
 
     // add 'Content-Length: 0' header (see https://github.com/nextcloud/desktop/issues/1473)
     QNetworkRequest request;
+    request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
     request.setHeader(QNetworkRequest::ContentLengthHeader, "0");
     request.setHeader(QNetworkRequest::UserAgentHeader, Utility::userAgentString());
 
@@ -168,6 +170,7 @@ void Flow2Auth::slotPollTimerTimeout()
 
     // Step 2: Poll
     QNetworkRequest request;
+    request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
 
     auto requestBody = new QBuffer;

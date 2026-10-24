@@ -62,7 +62,8 @@ CloudflareAccessSettings::CloudflareAccessSettings(QWidget *parent, CloudflareAc
     _form->addRow(tr("Client ID"), _clientId);
     _form->addRow(tr("Client Secret"), _clientSecret);
     content->addLayout(_form, 1, 0, 1, 2);
-    const auto hint = new QLabel(tr("Credentials are shared by all accounts on this HTTPS server and sent to every path on the same hostname and port. macOS "
+    const auto hint = new QLabel(tr("Only one HTTPS server can use Cloudflare Access in this profile. Credentials are shared by its accounts and sent to every "
+                                    "path on the same hostname and port. macOS "
                                     "File Provider is not supported."),
                                  this);
     hint->setWordWrap(true);

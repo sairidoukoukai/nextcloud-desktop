@@ -19,18 +19,19 @@
 #include "updatechannel.h"
 
 #include <QByteArray>
-#include <QUrl>
+#include <QHttpMultiPart>
 #include <QNetworkCookie>
 #include <QNetworkProxy>
 #include <QNetworkRequest>
-#include <QSslSocket>
-#include <QSslCertificate>
-#include <QSslConfiguration>
-#include <QSslCipher>
-#include <QSslError>
+#include <QPointer>
 #include <QSharedPointer>
-#include <QHttpMultiPart>
+#include <QSslCertificate>
+#include <QSslCipher>
+#include <QSslConfiguration>
+#include <QSslError>
+#include <QSslSocket>
 #include <QTimer>
+#include <QUrl>
 #include <QUuid>
 
 #ifndef TOKEN_AUTH_ONLY
@@ -328,7 +329,9 @@ public:
     [[nodiscard]] QSharedPointer<QNetworkAccessManager> sharedNetworkAccessManager() const;
 
     /// Called by network jobs on credential errors, emits invalidCredentials()
-    void handleInvalidCredentials();
+    void handleInvalidCredentials(QNetworkReply *reply = nullptr);
+    void cancelCloudflareCredentialCheck();
+    void advanceCredentialEpoch();
 
     ClientSideEncryption* e2e();
 
@@ -476,6 +479,7 @@ Q_SIGNALS:
 
     /// Triggered by handleInvalidCredentials()
     void invalidCredentials();
+    void cloudflareAccessCheckFailed();
 
     void credentialsFetched(OCC::AbstractCredentials *credentials);
     void credentialsAsked(OCC::AbstractCredentials *credentials);
@@ -583,6 +587,8 @@ private:
     bool _skipE2eeMetadataChecksumValidation = false;
     QScopedPointer<AbstractSslErrorHandler> _sslErrorHandler;
     QSharedPointer<QNetworkAccessManager> _networkAccessManager;
+    QPointer<QNetworkAccessManager> _cloudflareCredentialCheck;
+    quint64 _nativeCredentialEpoch = 0;
     QScopedPointer<AbstractCredentials> _credentials;
     bool _http2Supported = false;
 

@@ -7,6 +7,7 @@
 #include "cloudflareaccess.h"
 #include "cloudflareaccesstestserver.h"
 #include "configfile.h"
+#include "cookiejar.h"
 #include "creds/keychainchunk.h"
 #include "httplogger.h"
 
@@ -157,7 +158,7 @@ private Q_SLOTS:
         CloudflareAccess failing(nullptr, [this](const QString &key, const std::optional<QByteArray> &data, CloudflareAccess::Completion done) {
             done(data ? QByteArray{} : _entries.value(key), data ? "Storage unavailable"_L1 : QString{});
         });
-        failing.save(true, "https://other.example"_L1, "new-client"_L1, "new-secret"_L1);
+        failing.save(true, "https://cloud.example"_L1, "new-client"_L1, "new-secret"_L1);
         QVERIFY(!failing.busy());
         QVERIFY(!failing.error().isEmpty());
         QVERIFY(failing.protects(QUrl("https://cloud.example"_L1)));
@@ -190,6 +191,24 @@ private Q_SLOTS:
         QVERIFY(delayed.ready());
         QVERIFY(delayed.prepareRequest(request).isEmpty());
         QCOMPARE(request.rawHeader("CF-Access-Client-Secret"), "secret");
+    }
+
+    void changingOriginsRequiresExplicitDisable()
+    {
+        CloudflareAccess access(nullptr, storage());
+        access.save(true, "https://first.example"_L1, "first-id"_L1, "first-secret"_L1);
+        const auto entries = _entries;
+        access.save(true, "https://second.example"_L1, "second-id"_L1, "second-secret"_L1);
+        QVERIFY(!access.error().isEmpty());
+        QVERIFY(!access.busy());
+        QCOMPARE(access.serverUrl(), QUrl("https://first.example"_L1));
+        QCOMPARE(access.clientSecret(), "first-secret"_L1);
+        QCOMPARE(_entries, entries);
+        access.save(false, {}, {}, {});
+        access.save(true, "https://second.example"_L1, "second-id"_L1, "second-secret"_L1);
+        QVERIFY(access.error().isEmpty());
+        QCOMPARE(access.serverUrl(), QUrl("https://second.example"_L1));
+        QCOMPARE(_entries.size(), 1);
     }
 
     void timeoutAndDestroyedOwner()
@@ -237,11 +256,70 @@ private Q_SLOTS:
 
     void headerRedaction()
     {
-        for (const auto name : {"CF-Access-Client-Id", "cf-access-client-secret", "CF-ACCESS-CLIENT-SECRET"}) {
+        for (const auto name : {"CF-Access-Client-Id",
+                                "cf-access-client-secret",
+                                "CF-ACCESS-CLIENT-SECRET",
+                                "Cookie",
+                                "cOoKiE",
+                                "Set-Cookie",
+                                "SET-COOKIE",
+                                "Cf-Access-Jwt-Assertion",
+                                "Proxy-Authorization"}) {
             QCOMPARE(HttpLogger::redactedHeaderValue(name, "sensitive"), "[redacted]");
         }
         QCOMPARE(HttpLogger::redactedHeaderValue("authorization", "Basic sensitive"), "Basic [redacted]");
         QCOMPARE(HttpLogger::redactedHeaderValue("Content-Type", "application/json"), "application/json");
+    }
+
+    void credentialExchangeBodiesArePrivate()
+    {
+        auto request = QNetworkRequest(QUrl("https://cloud.example/arbitrary-poll-endpoint"_L1));
+        QVERIFY(HttpLogger::bodyLoggingAllowed(request));
+        request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
+        QVERIFY(!HttpLogger::bodyLoggingAllowed(request));
+        request.setAttribute(HttpLogger::SensitiveBodyAttribute, false);
+        for (const auto name : {"CF-Access-Client-Id", "cf-access-client-secret"}) {
+            request.setRawHeader(name, "synthetic-credential");
+            QVERIFY(!HttpLogger::bodyLoggingAllowed(request));
+            request.setRawHeader(name, QByteArray{});
+        }
+    }
+
+    void accessCookiesCannotSurviveTokenChanges()
+    {
+        CloudflareAccessTestServer server;
+        QVERIFY(server.isListening());
+        server.respond = [](const QByteArray &) {
+            auto response = CloudflareAccessTestServer::response(200, "{}");
+            response.replace(
+                "Connection: close\r\n",
+                "Connection: close\r\nSet-Cookie: CF_Authorization=reusable-cookie; Secure; Path=/\r\nSet-Cookie: nc_session=session; Secure; Path=/\r\n");
+            return response;
+        };
+        CloudflareAccess access(nullptr, storage());
+        access.save(true, server.baseUrl(), "client"_L1, "old-secret"_L1);
+        AccessManager manager(nullptr, &access);
+        connect(&manager, &QNetworkAccessManager::sslErrors, &manager, [](QNetworkReply *reply) {
+            reply->ignoreSslErrors();
+        });
+        const auto request = QNetworkRequest(QUrl(server.baseUrl() + "/request"_L1));
+        for (const auto stage : {0, 1, 2}) {
+            if (stage == 1) {
+                access.save(true, server.baseUrl(), "client"_L1, "new-secret"_L1);
+            } else if (stage == 2) {
+                access.save(false, {}, {}, {});
+            }
+            const auto reply = manager.get(request);
+            QSignalSpy finished(reply, &QNetworkReply::finished);
+            QTRY_COMPARE(finished.count(), 1);
+            QCOMPARE(reply->error(), QNetworkReply::NoError);
+            QVERIFY(!server.requests.last().contains("CF_Authorization"));
+            if (stage > 0) {
+                QVERIFY(server.requests.last().contains("nc_session=session"));
+            }
+            QCOMPARE(reply->request().rawHeader("CF-Access-Client-Secret"), stage == 2 ? QByteArray{} : QByteArray(stage == 0 ? "old-secret" : "new-secret"));
+            reply->deleteLater();
+        }
     }
 
     void oversizedCredentialsAreNotSaved()
@@ -330,6 +408,7 @@ private Q_SLOTS:
         constexpr auto rotations = 100;
         for (auto index = 0; index < rotations; ++index) {
             const auto first = index % 2 == 0;
+            access.save(false, {}, {}, {});
             access.save(true,
                         first ? "https://first.example"_L1 : "https://second.example"_L1,
                         first ? "first-id"_L1 : "second-id"_L1,

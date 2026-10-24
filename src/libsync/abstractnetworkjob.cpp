@@ -310,7 +310,7 @@ void AbstractNetworkJob::slotFinished()
 
     AbstractCredentials *creds = _account->credentials();
     if (!creds->stillValid(_reply) && !_ignoreCredentialFailure) {
-        _account->handleInvalidCredentials();
+        _account->handleInvalidCredentials(_reply);
     }
 
     bool discard = finished();

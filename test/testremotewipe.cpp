@@ -18,6 +18,7 @@
 #include "cloudflareaccess.h"
 #include "configfile.h"
 #include "folderman.h"
+#include "httplogger.h"
 #include "logger.h"
 
 #include "testhelper.h"
@@ -60,6 +61,8 @@ private Q_SLOTS:
         RemoteWipe wipe(account, nullptr, &loading);
         wipe.startCheckJobWithAppPassword(u"nextcloud-app-password"_s);
         QVERIFY(wipe._networkReplyCheck);
+        QVERIFY(wipe._networkReplyCheck->request().attribute(HttpLogger::SensitiveBodyAttribute).toBool());
+        QVERIFY(!HttpLogger::bodyLoggingAllowed(wipe._networkReplyCheck->request()));
         QCOMPARE(wipe._networkReplyCheck->error(), QNetworkReply::ContentAccessDenied);
         QSignalSpy finished(wipe._networkReplyCheck, &QNetworkReply::finished);
         QTRY_COMPARE(finished.count(), 1);

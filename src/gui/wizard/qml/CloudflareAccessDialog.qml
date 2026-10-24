@@ -123,7 +123,7 @@ Dialog {
         }
 
         EnforcedPlainTextLabel {
-            text: qsTr("Credentials are shared by all accounts on this HTTPS server and sent to every path on the same hostname and port. macOS File Provider is not supported.")
+            text: qsTr("Only one HTTPS server can use Cloudflare Access in this profile. Credentials are shared by its accounts and sent to every path on the same hostname and port. macOS File Provider is not supported.")
             color: Style.wizardSecondaryText
             wrapMode: Text.WordWrap
             Layout.fillWidth: true
