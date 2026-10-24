@@ -4,7 +4,9 @@
  */
 
 #include "remotewipe.h"
+#include "accessmanager.h"
 #include "folderman.h"
+#include "httplogger.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -15,11 +17,11 @@ namespace OCC {
 
 Q_LOGGING_CATEGORY(lcRemoteWipe, "nextcloud.gui.remotewipe", QtInfoMsg)
 
-RemoteWipe::RemoteWipe(AccountPtr account, QObject *parent)
-    : QObject(parent),
-      _account(account),
-      _appPassword(QString()),
-      _networkManager{new QNetworkAccessManager{this}}
+RemoteWipe::RemoteWipe(AccountPtr account, QObject *parent, CloudflareAccess *cloudflareAccess)
+    : QObject(parent)
+    , _account(account)
+    , _appPassword(QString())
+    , _networkManager{new AccessManager{this, cloudflareAccess}}
 {
     QObject::connect(AccountManager::instance(), &AccountManager::accountRemoved,
                      this, [=, this](AccountState *accountState) {
@@ -58,6 +60,7 @@ void RemoteWipe::startCheckJobWithAppPassword(QString pwd)
     QUrl requestUrl = Utility::concatUrlPath(_account->url().toString(),
                                              QLatin1String("/index.php/core/wipe/check"));
     QNetworkRequest request;
+    request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                       "application/x-www-form-urlencoded");
     request.setUrl(requestUrl);
@@ -158,6 +161,7 @@ void RemoteWipe::notifyServerSuccess()
     QUrl requestUrl = Utility::concatUrlPath(_account->url().toString(),
                                                 QLatin1String("/index.php/core/wipe/success"));
     QNetworkRequest request;
+    request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                         "application/x-www-form-urlencoded");
     request.setUrl(requestUrl);

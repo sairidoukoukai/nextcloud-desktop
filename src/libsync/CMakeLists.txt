@@ -64,6 +64,10 @@ set(libsync_SRCS
     logger.cpp
     accessmanager.h
     accessmanager.cpp
+    cloudflareaccess.h
+    cloudflareaccess.cpp
+    cloudflareaccessreply.h
+    cloudflareaccessreply.cpp
     configfile.h
     configfile.cpp
     abstractnetworkjob.h

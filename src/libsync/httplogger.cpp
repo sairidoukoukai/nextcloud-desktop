@@ -24,7 +24,13 @@ bool isTextBody(const QString &s)
     return regexp.match(s).hasMatch();
 }
 
-void logHttp(const QByteArray &verb, const QString &url, const QByteArray &id, const QString &contentType, const QList<QNetworkReply::RawHeaderPair> &header, QIODevice *device)
+void logHttp(const QByteArray &verb,
+             const QString &url,
+             const QByteArray &id,
+             const QString &contentType,
+             const QList<QNetworkReply::RawHeaderPair> &header,
+             QIODevice *device,
+             bool allowBody)
 {
     const auto reply = qobject_cast<QNetworkReply *>(device);
     const auto contentLength = device ? device->size() : 0;
@@ -43,16 +49,13 @@ void logHttp(const QByteArray &verb, const QString &url, const QByteArray &id, c
     stream << " " << url << " Header: { ";
     for (const auto &it : header) {
         stream << it.first << ": ";
-        if (it.first == "Authorization") {
-            stream << (it.second.startsWith("Bearer ") ? "Bearer" : "Basic");
-            stream << " [redacted]";
-        } else {
-            stream << it.second;
-        }
+        stream << OCC::HttpLogger::redactedHeaderValue(it.first, it.second);
         stream << ", ";
     }
     stream << "} Data: [";
-    if (contentLength > 0) {
+    if (!allowBody) {
+        stream << "[redacted]";
+    } else if (contentLength > 0) {
         if (isTextBody(contentType)) {
             if (!device->isOpen()) {
                 Q_ASSERT(dynamic_cast<QBuffer *>(device));
@@ -77,6 +80,25 @@ void logHttp(const QByteArray &verb, const QString &url, const QByteArray &id, c
 
 namespace OCC {
 
+bool HttpLogger::bodyLoggingAllowed(const QNetworkRequest &request)
+{
+    return !request.attribute(SensitiveBodyAttribute).toBool() && !request.hasRawHeader("CF-Access-Client-Id")
+        && !request.hasRawHeader("CF-Access-Client-Secret");
+}
+
+QByteArray HttpLogger::redactedHeaderValue(const QByteArray &name, const QByteArray &value)
+{
+    if (name.compare("CF-Access-Client-Id", Qt::CaseInsensitive) == 0 || name.compare("CF-Access-Client-Secret", Qt::CaseInsensitive) == 0
+        || name.compare("Cookie", Qt::CaseInsensitive) == 0 || name.compare("Set-Cookie", Qt::CaseInsensitive) == 0
+        || name.compare("Cf-Access-Jwt-Assertion", Qt::CaseInsensitive) == 0 || name.compare("Proxy-Authorization", Qt::CaseInsensitive) == 0) {
+        return "[redacted]";
+    }
+    if (name.compare("Authorization", Qt::CaseInsensitive) == 0) {
+        return value.startsWith("Bearer ") ? "Bearer [redacted]" : "Basic [redacted]";
+    }
+    return value;
+}
+
 void HttpLogger::logRequest(QNetworkReply *reply, QNetworkAccessManager::Operation operation, QIODevice *device)
 {
     const auto request = reply->request();
@@ -90,19 +112,21 @@ void HttpLogger::logRequest(QNetworkReply *reply, QNetworkAccessManager::Operati
         header << qMakePair(key, request.rawHeader(key));
     }
     logHttp(requestVerb(operation, request),
-        request.url().toString(),
-        request.rawHeader(XRequestId()),
-        request.header(QNetworkRequest::ContentTypeHeader).toString(),
-        header,
-        device);
+            request.url().toString(),
+            request.rawHeader(XRequestId()),
+            request.header(QNetworkRequest::ContentTypeHeader).toString(),
+            header,
+            device,
+            bodyLoggingAllowed(request));
 
     QObject::connect(reply, &QNetworkReply::finished, reply, [reply] {
         logHttp(requestVerb(*reply),
-            reply->url().toString(),
-            reply->request().rawHeader(XRequestId()),
-            reply->header(QNetworkRequest::ContentTypeHeader).toString(),
-            reply->rawHeaderPairs(),
-            reply);
+                reply->url().toString(),
+                reply->request().rawHeader(XRequestId()),
+                reply->header(QNetworkRequest::ContentTypeHeader).toString(),
+                reply->rawHeaderPairs(),
+                reply,
+                bodyLoggingAllowed(reply->request()));
     });
 }
 

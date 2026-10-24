@@ -11,15 +11,18 @@
 
 namespace OCC {
 namespace HttpLogger {
-    void OWNCLOUDSYNC_EXPORT logRequest(QNetworkReply *reply, QNetworkAccessManager::Operation operation, QIODevice *device);
+inline constexpr auto SensitiveBodyAttribute = static_cast<QNetworkRequest::Attribute>(QNetworkRequest::User + 1);
+bool OWNCLOUDSYNC_EXPORT bodyLoggingAllowed(const QNetworkRequest &request);
+QByteArray OWNCLOUDSYNC_EXPORT redactedHeaderValue(const QByteArray &name, const QByteArray &value);
+void OWNCLOUDSYNC_EXPORT logRequest(QNetworkReply *reply, QNetworkAccessManager::Operation operation, QIODevice *device);
 
-    /**
-    * Helper to construct the HTTP verb used in the request
-    */
-    QByteArray OWNCLOUDSYNC_EXPORT requestVerb(QNetworkAccessManager::Operation operation, const QNetworkRequest &request);
-    inline QByteArray requestVerb(const QNetworkReply &reply)
-    {
-        return requestVerb(reply.operation(), reply.request());
-    }
+/**
+ * Helper to construct the HTTP verb used in the request
+ */
+QByteArray OWNCLOUDSYNC_EXPORT requestVerb(QNetworkAccessManager::Operation operation, const QNetworkRequest &request);
+inline QByteArray requestVerb(const QNetworkReply &reply)
+{
+    return requestVerb(reply.operation(), reply.request());
+}
 }
 }

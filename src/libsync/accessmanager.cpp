@@ -15,9 +15,11 @@
 #include <QNetworkInformation>
 #include <QUuid>
 
-#include "cookiejar.h"
 #include "accessmanager.h"
+#include "cloudflareaccess.h"
+#include "cloudflareaccessreply.h"
 #include "common/utility.h"
+#include "cookiejar.h"
 #include "httplogger.h"
 
 using namespace Qt::StringLiterals;
@@ -26,10 +28,11 @@ namespace OCC {
 
 Q_LOGGING_CATEGORY(lcAccessManager, "nextcloud.sync.accessmanager", QtInfoMsg)
 
-AccessManager::AccessManager(QObject *parent)
+AccessManager::AccessManager(QObject *parent, CloudflareAccess *cloudflareAccess)
     : QNetworkAccessManager(parent)
+    , _cloudflareAccess(cloudflareAccess ? cloudflareAccess : CloudflareAccess::instance())
 {
-    setCookieJar(new CookieJar);
+    setCookieJar(new CookieJar(this, false));
 
     // Enable HSTS (HTTP Strict Transport Security) for all connections
     enableStrictTransportSecurityStore(true);
@@ -82,6 +85,10 @@ QNetworkReply *AccessManager::createRequest(QNetworkAccessManager::Operation op,
     };
 
     QNetworkRequest newRequest(request);
+    newRequest.setAttribute(NativeCredentialEpochAttribute, QVariant::fromValue(_nativeCredentialEpoch));
+    if (const auto error = _cloudflareAccess->prepareRequest(newRequest); !error.isEmpty()) {
+        return new CloudflareAccessReply(op, newRequest, error, this);
+    }
 
     // Respect request specific user agent if any
     if (!newRequest.header(QNetworkRequest::UserAgentHeader).isValid()) {
@@ -120,12 +127,12 @@ QNetworkReply *AccessManager::createRequest(QNetworkAccessManager::Operation op,
     const auto reply = QNetworkAccessManager::createRequest(op, newRequest, outgoingData);
     HttpLogger::logRequest(reply, op, outgoingData);
     QObject::connect(reply, &QNetworkReply::requestSent, reply, [reply] {
-        qCInfo(lcAccessManager()) << "Request has been sent"
-                                  << reply->url().toString()
-                                  << reply->request().rawHeader("X-Request-ID"_ba)
-                                  << reply->header(QNetworkRequest::ContentTypeHeader).toString()
-                                  << reply->rawHeaderPairs()
-                                  << reply;
+        auto headers = reply->rawHeaderPairs();
+        for (auto &header : headers) {
+            header.second = HttpLogger::redactedHeaderValue(header.first, header.second);
+        }
+        qCInfo(lcAccessManager()) << "Request has been sent" << reply->url().toString() << reply->request().rawHeader("X-Request-ID"_ba)
+                                  << reply->header(QNetworkRequest::ContentTypeHeader).toString() << headers << reply;
     });
     return reply;
 }

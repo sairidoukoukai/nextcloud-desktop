@@ -22,6 +22,7 @@
 
 #include "gui/accountmanager.h"
 #include "libsync/account.h"
+#include "libsync/cloudflareaccess.h"
 
 static_assert(__has_feature(objc_arc), "fileproviderdomainmanager requires ARC.");
 
@@ -567,6 +568,10 @@ QString FileProviderDomainManager::addDomainForAccount(const AccountState * cons
     Q_ASSERT(accountState);
     const auto account = accountState->account();
     Q_ASSERT(account);
+
+    if (CloudflareAccess::instance()->protects(account->url())) {
+        return {};
+    }
 
     const auto identifier = d->addFileProviderDomain(accountState);
 

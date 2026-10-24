@@ -30,6 +30,8 @@ namespace OCC {
 class SelectiveSyncDialog;
 class AccountState;
 class FolderDefinition;
+class CloudflareAccessSettingsController;
+class CloudflareAccess;
 
 namespace Utility
 {
@@ -100,8 +102,11 @@ class AccountWizardController : public QObject
     Q_PROPERTY(QString clientCertificatePassword READ clientCertificatePassword WRITE setClientCertificatePassword NOTIFY clientCertificateChanged)
     Q_PROPERTY(QString clientCertificateError READ clientCertificateError NOTIFY clientCertificateChanged)
     Q_PROPERTY(bool clientCertificateValid READ clientCertificateValid NOTIFY clientCertificateChanged)
+    Q_PROPERTY(QObject *cloudflareAccess READ cloudflareAccess CONSTANT)
+    Q_PROPERTY(QString cloudflareServerUrl READ cloudflareServerUrl NOTIFY serverUrlChanged)
 
 public:
+    [[nodiscard]] QObject *cloudflareAccess() const;
     enum Step {
         ServerStep = 0,
         BrowserAuthStep,
@@ -118,7 +123,7 @@ public:
     };
     Q_ENUM(SyncMode)
 
-    explicit AccountWizardController(QObject *parent = nullptr);
+    explicit AccountWizardController(QObject *parent = nullptr, CloudflareAccess *cloudflareAccess = nullptr);
     ~AccountWizardController() override;
 
     /** @brief Sets the wizard window that native panels are attached to. */
@@ -129,6 +134,7 @@ public:
 
     [[nodiscard]] Step currentStep() const;
     [[nodiscard]] QString serverUrl() const;
+    [[nodiscard]] QString cloudflareServerUrl() const;
     void setServerUrl(const QString &serverUrl);
     [[nodiscard]] bool serverUrlEditable() const;
     [[nodiscard]] bool overrideServerSelectionRequired() const;
@@ -271,6 +277,8 @@ private Q_SLOTS:
     void slotCreateRemoteFolderFinished(QNetworkReply *reply);
 
 private:
+    CloudflareAccess *_cloudflareAccess;
+    CloudflareAccessSettingsController *_cloudflareAccessSettings;
     using LocalNetworkPermissionCheck = std::function<void(const QUrl &, QObject *, std::function<void(bool)>)>;
     // Reports the chosen folder, or an empty path when cancelled, and its security-scoped bookmark if any.
     using LocalSyncFolderPicker = std::function<void(const QString &, const QString &, std::function<void(const QString &, const QByteArray &)>)>;
@@ -283,6 +291,7 @@ private:
     [[nodiscard]] ManagedVirtualFilesMode accountManagedVirtualFilesMode() const;
     void initialiseAccount();
     void ensureAccount();
+    [[nodiscard]] QString cloudflareAccessError(const QUrl &url) const;
     void initialiseOverrideServerChoices();
     void startServerCheck(const QUrl &serverUrl);
     void startFlow2Auth();
@@ -326,7 +335,7 @@ private:
     void seedProxySettingsFromManagedDefault();
     void discardFlow2Auth();
     [[nodiscard]] bool checkDowngradeAdvised(QNetworkReply *reply) const;
-    void handleFailedServerConnection(const QUrl &url, bool retryHttpOnly);
+    void handleFailedServerConnection(const QUrl &url, bool retryHttpOnly, bool secureConnectionFailure);
     void handleSecureConnectionFailure(QNetworkReply *reply, bool retryHttpOnly);
 
     AccountPtr _account;

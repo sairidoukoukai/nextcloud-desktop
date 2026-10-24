@@ -9,16 +9,17 @@
 #include "accountmanager.h"
 #include "application.h"
 #include "capabilities.h"
+#include "cloudflareaccesssettings.h"
+#include "common/syncjournaldb.h"
 #include "common/utility.h"
 #include "configfile.h"
-#include "folderman.h"
 #include "folder.h"
+#include "folderman.h"
 #include "ignorelisteditor.h"
 #include "logger.h"
 #include "owncloudgui.h"
 #include "settingspanelstyle.h"
 #include "theme.h"
-#include "common/syncjournaldb.h"
 
 #ifdef BUILD_FILE_PROVIDER_MODULE
 #include "macOS/fileproviderutils.h"
@@ -231,6 +232,7 @@ AdvancedSettings::AdvancedSettings(QWidget *parent)
     , _ui(new Ui::AdvancedSettings)
 {
     _ui->setupUi(this);
+    _ui->pageLayout->insertWidget(0, new CloudflareAccessSettings(this));
 
     _ui->newFolderLimitLabel->setWordWrap(true);
     _ui->existingFolderLimitLabel->setWordWrap(true);

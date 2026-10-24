@@ -9,11 +9,13 @@
 #include "accountfwd.h"
 #include "capabilities.h"
 #include "clientsideencryptionjobs.h"
+#include "cloudflareaccess.h"
 #include "common/remotepermissions.h"
 #include "common/utility.h"
 #include "configfile.h"
 #include "cookiejar.h"
 #include "creds/abstractcredentials.h"
+#include "httplogger.h"
 #include "networkjobs.h"
 #include "pushnotifications.h"
 #include "theme.h"
@@ -51,9 +53,12 @@
 
 #include <qt6keychain/keychain.h>
 
+#include <algorithm>
+
 #include "creds/abstractcredentials.h"
 
 using namespace QKeychain;
+using namespace Qt::StringLiterals;
 
 namespace {
 constexpr int pushNotificationsReconnectInterval = 1000 * 60 * 2;
@@ -284,6 +289,7 @@ AbstractCredentials *Account::credentials() const
 
 void Account::setCredentials(AbstractCredentials *cred)
 {
+    advanceCredentialEpoch();
     // set active credential manager
     QNetworkCookieJar *jar = nullptr;
     QNetworkProxy proxy;
@@ -307,6 +313,7 @@ void Account::setCredentials(AbstractCredentials *cred)
     // This is necessary to avoid issues with the QNAM being deleted while
     // processing slotHandleSslErrors().
     _networkAccessManager = QSharedPointer<QNetworkAccessManager>(_credentials->createQNAM(), &QObject::deleteLater);
+    advanceCredentialEpoch();
 
     if (jar) {
         _networkAccessManager->setCookieJar(jar);
@@ -450,6 +457,7 @@ void Account::resetNetworkAccessManager()
     // Use a QSharedPointer to allow locking the life of the QNAM on the stack.
     // Make it call deleteLater to make sure that we can return to any QNAM stack frames safely.
     _networkAccessManager = QSharedPointer<QNetworkAccessManager>(_credentials->createQNAM(), &QObject::deleteLater);
+    advanceCredentialEpoch();
 
     _networkAccessManager->setCookieJar(jar); // takes ownership of the old cookie jar
     _networkAccessManager->setProxy(proxy);   // Remember proxy (issue #2108)
@@ -584,6 +592,7 @@ void Account::setSslErrorHandler(AbstractSslErrorHandler *handler)
 
 void Account::setUrl(const QUrl &url)
 {
+    advanceCredentialEpoch();
     const QRegularExpression discoverPublicLinks(R"(((https|http)://[^/]*).*/s/([^/]*)$)");
     const auto isPublicLink = discoverPublicLinks.match(url.toString());
     if (isPublicLink.hasMatch()) {
@@ -708,6 +717,7 @@ void Account::slotHandleSslErrors(QNetworkReply *reply, QList<QSslError> errors)
 
 void Account::slotCredentialsFetched()
 {
+    advanceCredentialEpoch();
     if (_davUser.isEmpty()) {
         qCDebug(lcAccount) << "User id not set. Fetch it.";
         const auto fetchUserNameJob = new JsonApiJob(sharedFromThis(), QStringLiteral("/ocs/v1.php/cloud/user"));
@@ -734,11 +744,100 @@ void Account::slotCredentialsFetched()
 
 void Account::slotCredentialsAsked()
 {
+    advanceCredentialEpoch();
     Q_EMIT credentialsAsked(_credentials.data());
 }
 
-void Account::handleInvalidCredentials()
+void Account::advanceCredentialEpoch()
 {
+    cancelCloudflareCredentialCheck();
+    ++_nativeCredentialEpoch;
+    if (const auto manager = qobject_cast<AccessManager *>(networkAccessManager())) {
+        manager->setNativeCredentialEpoch(_nativeCredentialEpoch);
+    }
+}
+
+void Account::cancelCloudflareCredentialCheck()
+{
+    const auto manager = _cloudflareCredentialCheck;
+    _cloudflareCredentialCheck = nullptr;
+    if (manager) {
+        manager->deleteLater();
+    }
+}
+
+void Account::handleInvalidCredentials(QNetworkReply *reply)
+{
+    if (reply && reply->request().hasRawHeader("CF-Access-Client-Id")) {
+        const auto accountManager = qobject_cast<AccessManager *>(networkAccessManager());
+        const auto access = accountManager ? accountManager->cloudflareAccess() : nullptr;
+        const auto challengedRequest = reply->request();
+        const auto nativeEpoch = challengedRequest.attribute(AccessManager::NativeCredentialEpochAttribute).toULongLong();
+        if (!access || !access->matchesCurrentRequest(challengedRequest) || _cloudflareCredentialCheck || !credentials()->ready()
+            || !challengedRequest.attribute(AccessManager::NativeCredentialEpochAttribute).isValid() || nativeEpoch != _nativeCredentialEpoch) {
+            return;
+        }
+        if (!access->protects(url())) {
+            Q_EMIT cloudflareAccessCheckFailed();
+            return;
+        }
+        const auto manager = new AccessManager(this, access);
+        const auto guard = QPointer<Account>(this);
+        _cloudflareCredentialCheck = manager;
+        manager->setProxy(networkAccessManager()->proxy());
+        connect(manager, &QNetworkAccessManager::sslErrors, manager, [this, guard](QNetworkReply *reply, const QList<QSslError> &errors) {
+            if (guard && std::all_of(errors.cbegin(), errors.cend(), [this](const QSslError &error) {
+                    return _approvedCerts.contains(error.certificate());
+                })) {
+                reply->ignoreSslErrors(errors);
+            }
+        });
+        connect(access, &CloudflareAccess::changed, manager, [this, manager, guard] {
+            if (guard && _cloudflareCredentialCheck == manager) {
+                cancelCloudflareCredentialCheck();
+            }
+        });
+        const auto statusUrl = Utility::concatUrlPath(url(), "status.php"_L1);
+        auto request = QNetworkRequest(statusUrl);
+        request.setSslConfiguration(getOrCreateSslConfig());
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+        request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
+        request.setAttribute(QNetworkRequest::CacheSaveControlAttribute, false);
+        request.setAttribute(QNetworkRequest::AuthenticationReuseAttribute, QNetworkRequest::Manual);
+        request.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
+        request.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
+        request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
+        const auto probe = manager->get(request);
+        constexpr auto maximumStatusBytes = 64 * 1024;
+        probe->setReadBufferSize(maximumStatusBytes);
+        connect(probe, &QNetworkReply::finished, manager, [this, manager, guard, access, challengedRequest, probe, statusUrl, nativeEpoch] {
+            if (!guard || _cloudflareCredentialCheck != manager) {
+                return;
+            }
+            _cloudflareCredentialCheck = nullptr;
+            const auto current = access->matchesCurrentRequest(challengedRequest) && credentials()->ready() && nativeEpoch == _nativeCredentialEpoch;
+            const auto status = QJsonDocument::fromJson(probe->readAll()).object();
+            const auto reachedNextcloud = probe->error() == QNetworkReply::NoError && probe->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200
+                && probe->url() == statusUrl && status.value("installed"_L1).isBool() && status.value("installed"_L1).toBool();
+            manager->deleteLater();
+            if (!current) {
+                return;
+            }
+            if (reachedNextcloud) {
+                retrieveAppPassword();
+                Q_EMIT invalidCredentials();
+            } else {
+                Q_EMIT cloudflareAccessCheckFailed();
+            }
+        });
+        QTimer::singleShot(std::chrono::seconds(10), manager, [this, manager, guard] {
+            if (guard && _cloudflareCredentialCheck == manager) {
+                cancelCloudflareCredentialCheck();
+                Q_EMIT cloudflareAccessCheckFailed();
+            }
+        });
+        return;
+    }
     // Retrieving password will trigger remote wipe check job
     retrieveAppPassword();
 
