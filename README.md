@@ -11,7 +11,7 @@ An unofficial fork maintained by 再履バス同好会 (Sairibus), based on Next
 
 ## Install and connect
 
-The first release targets Windows x64. Preview installers are unsigned. This fork disables the official automatic updater; install subsequent releases from this repository.
+Releases target Windows x64. Installers are unsigned. This fork disables the official automatic updater; install subsequent releases from this repository.
 
 1. Obtain a separate Cloudflare **Client ID** and **Client Secret** for your device from the server operator.
 2. Enter the HTTPS Nextcloud address in the account wizard. Open **Cloudflare Access…** before checking the server, enable it, and enter the token pair.
@@ -35,7 +35,7 @@ A [small patch](admin/club/patches/0001-nextcloud-blueprint-packaging.patch) rep
 
 The installation check uses NSIS's explicit all-users mode on a fresh 64-bit runner. It compares the installed executable and sync libraries with the tested build and checks the Start Menu shortcut's target.
 
-The **Sairibus Windows release** workflow runs manually from `main`. It rejects other refs, stale source commits, invalid tags and existing tags. Publication rechecks `main` and the artifact checksums. Releases include `SHA256SUMS`, `build-info.json`, and the complete source archives.
+The **Sairibus Windows release** workflow runs manually from `main`. It rejects other refs, stale source commits, invalid tags and existing tags. Publication rechecks `main` and the artifact checksums. Each publication is a regular GitHub release marked as Latest. Releases include `SHA256SUMS`, `build-info.json`, and the complete source archives.
 
 Release automation uses standard GitHub-hosted runners. No signing credentials or server credentials are required. Review changes through pull requests before running a release.
 
