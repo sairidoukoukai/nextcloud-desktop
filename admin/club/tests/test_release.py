@@ -4,7 +4,10 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -82,3 +85,36 @@ class ReleaseTests(unittest.TestCase):
             installer.symlink_to(target)
             with self.assertRaises(ValueError):
                 release.checksums(directory, "v35.0.0-sairibus.1", "a" * 40)
+
+
+class PublicationTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("bash"), "The publication workflow runs in Bash.")
+    def test_workflow_publishes_a_regular_latest_release(self):
+        workflow = Path(__file__).resolve().parents[3] / ".github/workflows/club-release.yml"
+        lines = workflow.read_text().splitlines()
+        start = next(i for i, line in enumerate(lines) if line.strip().startswith("gh release create "))
+        command = "\n".join(line.strip() for line in lines[start:])
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            gh = directory / "gh"
+            gh.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, pathlib, sys\n"
+                "pathlib.Path(os.environ['GH_ARGUMENTS']).write_text(json.dumps(sys.argv[1:]))\n"
+            )
+            gh.chmod(0o755)
+            captured = directory / "arguments.json"
+            env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
+                       RELEASE_TAG="v35.0.0-sairibus.3", GH_ARGUMENTS=str(captured))
+            subprocess.run(["bash", "-eu", "-c", command], cwd=directory, env=env, check=True)
+            arguments = json.loads(captured.read_text())
+            self.assertEqual(arguments[:3], ["release", "create", "v35.0.0-sairibus.3"])
+            for asset in ["artifacts/Nextcloud-35.0.0-sairibus.3-windows-x64.exe",
+                          "artifacts/build-info.json", "artifacts/SHA256SUMS"]:
+                self.assertIn(asset, arguments)
+            self.assertIn("--verify-tag", arguments)
+            self.assertIn("--latest", arguments)
+            self.assertFalse(any(arg.startswith(("--prerelease", "--draft")) for arg in arguments))
+            self.assertNotIn("--latest=false", arguments)
+            self.assertEqual(arguments[arguments.index("--title") + 1],
+                             "Nextcloud v35.0.0-sairibus.3 — Sairibus")

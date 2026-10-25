@@ -85,7 +85,7 @@ jobs:
         with:
           name: windows-x64
           path: artifacts
-      - name: Recheck main and publish preview
+      - name: Recheck main and publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -102,7 +102,7 @@ jobs:
           assert info['release_tag'] == os.environ['RELEASE_TAG']
           notes = f"""Unofficial Nextcloud Desktop 35.0.0 with Cloudflare Access Service Token support.
 
-          Windows x64 installer. This preview is unsigned. Automatic updates from the official Nextcloud channel are disabled.
+          Windows x64 installer. The installer is unsigned. Automatic updates from the official Nextcloud channel are disabled.
 
           Source commit: `{info['source_commit']}`. Upstream stable-35.0 base: `{info['upstream_base']}`. Thirteen focused client test suites passed on the GitHub Windows runner. A silent installation check verified the executable and sync libraries against the tested build, plus the Start Menu launcher target. GUI startup and synchronization with the production server have not been tested by this workflow.
 
@@ -120,5 +120,5 @@ jobs:
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" --input tag.json > /dev/null
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)" = "$GITHUB_SHA"
           gh release create "$RELEASE_TAG" "artifacts/Nextcloud-${RELEASE_TAG#v}-windows-x64.exe" artifacts/build-info.json artifacts/SHA256SUMS --verify-tag \
-            --title "Nextcloud $RELEASE_TAG — Sairibus preview" \
-            --notes-file release-notes.md --prerelease --latest=false
+            --title "Nextcloud $RELEASE_TAG — Sairibus" \
+            --notes-file release-notes.md --latest
