@@ -14,11 +14,17 @@ Enter `https://nc.sairibus.com` in the account wizard and continue. The client
 opens the browser for 再バ同アカウント sign-in. Use a passkey or an email code,
 then approve the device in Nextcloud and choose the folders to synchronize.
 
-The Windows installer bundles the pinned official cloudflared helper. It runs
+The Windows installer bundles cloudflared built from pinned source with a small
+login retry patch. The patch and pinned Go toolchain are recorded in
+`admin/club/cloudflared.json` and the release's `build-info.json`. It runs
 `access login --no-verbose --auto-close` for the exact HTTPS origin. The client
 checks the binary hash before execution and stores the resulting application
 JWT in QtKeychain. Each local account UUID has its own credential entry; a
 session for another central identity cannot replace it.
+
+Temporary metadata and token-transfer failures are retried with a delay, using
+the same browser handoff. Metadata discovery has a 30-second budget; the client
+allows five minutes for the whole sign-in. Cancellation stops the helper.
 
 The helper's application and organization token cache lives in an owned,
 disposable directory with private permissions. The client deletes it after the

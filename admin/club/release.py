@@ -12,14 +12,17 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import urllib.request
+import zipfile
 
 UPSTREAM_BASE = "76ef152f8c98009c910f124af1da20876e3915e9"
 BLUEPRINTS_COMMIT = "d9829275a569d3cf83e42ad9c50140074d01dd9f"
 RECIPE_PATCH = Path(__file__).resolve().parent / "patches/0001-nextcloud-blueprint-packaging.patch"
 HELPER = json.loads((Path(__file__).resolve().parent / "cloudflared.json").read_text())
+HELPER_PATCH = Path(__file__).resolve().parent / "patches/0002-cloudflared-login-retry.patch"
 EXPECTED_TESTS = {
     "CloudflareAccessTest", "CookiesTest", "AccountWizardControllerTest",
     "AccountWizardWindowQmlTest", "SettingsDialogTest", "PushNotificationsTest",
@@ -78,20 +81,74 @@ def license_notices(modules):
     return "\n\n".join(sections) + "\n"
 
 
+def helper_environment(stage):
+    return dict(os.environ, GOMODCACHE=str(stage / "modules"), GOCACHE=str(stage / "build-cache"),
+                GOROOT=str(stage / "go"), GOPATH=str(stage / "gopath"), GO111MODULE="on",
+                GOENV="off", GOWORK="off", GOTOOLCHAIN="local", GOFLAGS="", CGO_ENABLED="0",
+                GOOS="windows", GOARCH="amd64", GOAMD64="v1", GOEXPERIMENT="", GOMAXPROCS="2",
+                GOPRIVATE="", GONOSUMDB="", GONOPROXY="", GOINSECURE="", GOSUMDB="sum.golang.org",
+                GOPROXY="https://proxy.golang.org,direct")
+
+
+def helper_toolchain(stage):
+    platform = "windows_amd64" if sys.platform == "win32" else "linux_amd64"
+    pin = HELPER["go"][platform]
+    archive = stage / Path(pin["url"]).name
+    download_verified(pin["url"], pin["sha256"], archive)
+    if platform == "windows_amd64":
+        with zipfile.ZipFile(archive) as contents:
+            for entry in contents.infolist():
+                if not entry.filename.startswith("go/") or ".." in Path(entry.filename).parts:
+                    raise ValueError("Invalid pinned Go archive path.")
+            contents.extractall(stage)
+    else:
+        with tarfile.open(archive) as contents:
+            contents.extractall(stage, filter="data")
+    executable = stage / "go/bin" / ("go.exe" if platform == "windows_amd64" else "go")
+    version = subprocess.run([str(executable), "version"], env=helper_environment(stage),
+                             check=True, capture_output=True, text=True, timeout=30).stdout.split()
+    if len(version) != 4 or version[2] != HELPER["go"]["version"]:
+        raise ValueError("The helper must use the pinned Go toolchain.")
+    return executable
+
+
+def build_helper(source, executable, go, env):
+    test_env = dict(env, GOOS="windows" if sys.platform == "win32" else "linux")
+    subprocess.run([str(go), "test", "-p=2", "-mod=readonly", "-trimpath", "./token", "./cmd/cloudflared/access", "-count=1", "-timeout=180s"],
+                   cwd=source, env=test_env, check=True, timeout=600)
+    flags = ("-s -w -buildid= -X main.Version=" + HELPER["version"]
+             + " -X main.BuildTime=2000-01-01T00:00:00Z -X main.BuildType=sairibus")
+    subprocess.run([str(go), "build", "-p=2", "-mod=readonly", "-trimpath", "-buildvcs=false",
+                    "-ldflags", flags, "-o", str(executable), "./cmd/cloudflared"],
+                   cwd=source, env=env, check=True, timeout=1200)
+    with executable.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != HELPER["windows_amd64"]["sha256"]:
+            raise ValueError("Source-built helper does not match the pinned binary digest.")
+
+
 def install_helper(directory):
     directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="nextcloud-helper-") as temporary:
         stage = Path(temporary)
         executable = stage / "cloudflared.exe"
-        download_verified(HELPER["windows_amd64"]["url"], HELPER["windows_amd64"]["sha256"], executable)
         archive = stage / "source.tar.gz"
         download_verified(HELPER["source_url"], HELPER["source_sha256"], archive)
         with tarfile.open(archive) as contents:
             contents.extractall(stage / "source", filter="data")
         source = stage / "source" / ("cloudflared-" + HELPER["source_commit"])
-        env = dict(os.environ, GOMODCACHE=str(stage / "modules"), GOOS="windows", GOARCH="amd64")
+        patch = HELPER_PATCH.read_text().encode("utf-8")
+        if hashlib.sha256(patch).hexdigest() != HELPER["patch_sha256"]:
+            raise ValueError("The helper retry patch does not match its pin.")
+        patchfile = stage / "retry.patch"
+        patchfile.write_bytes(patch)
+        subprocess.run(["git", "apply", "--whitespace=error-all", str(patchfile)],
+                       cwd=source, check=True, capture_output=True, timeout=30)
+        shutil.copyfile(Path(__file__).resolve().parent / "tests/helper_retry_test.go", source / "token/sairibus_retry_test.go")
+        shutil.copyfile(Path(__file__).resolve().parent / "tests/helper_token_check_test.go", source / "cmd/cloudflared/access/sairibus_retry_test.go")
+        env = helper_environment(stage)
+        go = helper_toolchain(stage)
         # Go authenticates module archives against the pinned source's go.sum.
-        downloaded = subprocess.run(["go", "mod", "download", "-json"], cwd=source, env=env,
+        downloaded = subprocess.run([str(go), "mod", "download", "-json"], cwd=source, env=env,
                                     check=True, capture_output=True, text=True, timeout=600).stdout
         modules = [{"Path": "github.com/cloudflare/cloudflared", "Version": HELPER["version"], "Dir": str(source)}]
         decoder = json.JSONDecoder()
@@ -103,6 +160,11 @@ def install_helper(directory):
             modules.append(module)
             remaining = remaining[offset:].lstrip()
         notices = license_notices(modules)
+        go_license = stage / "go/LICENSE"
+        if not go_license.is_file() or go_license.stat().st_size > 1024 * 1024:
+            raise ValueError("The pinned Go runtime license is missing or invalid.")
+        notices += "\nGo runtime " + HELPER["go"]["version"] + " — LICENSE\n" + go_license.read_text(encoding="utf-8")
+        build_helper(source, executable, go, env)
         (directory / "nextcloud-cloudflared-LICENSE.txt").write_text(notices, encoding="utf-8")
         shutil.copyfile(executable, directory / HELPER["windows_amd64"]["installed_name"])
 

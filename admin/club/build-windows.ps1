@@ -106,7 +106,7 @@ try {
     }
     $installedHelper = Join-Path $smoke 'bin/nextcloud-cloudflared.exe'
     if ((Get-FileHash $installedHelper -Algorithm SHA256).Hash.ToLowerInvariant() -ne $helperPin.windows_amd64.sha256) {
-        throw 'Installed browser sign-in helper differs from the pinned official binary.'
+        throw 'Installed browser sign-in helper differs from the pinned source build.'
     }
     $installedNotices = Join-Path $smoke 'bin/nextcloud-cloudflared-LICENSE.txt'
     if ((Get-FileHash $installedNotices -Algorithm SHA256).Hash -ne (Get-FileHash (Join-Path $helperDirectory 'nextcloud-cloudflared-LICENSE.txt') -Algorithm SHA256).Hash) {

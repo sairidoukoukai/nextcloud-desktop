@@ -106,7 +106,7 @@ jobs:
 
           Source commit: `{info['source_commit']}`. Upstream stable-35.0 base: `{info['upstream_base']}`. Thirteen focused client test suites passed on the GitHub Windows runner. A silent installation check verified the executable and sync libraries against the tested build, plus the Start Menu launcher target. GUI startup and synchronization with the production server have not been tested by this workflow.
 
-          Enter https://nc.sairibus.com in the account wizard, sign in with your 再バ同アカウント in the browser, and approve the device in Nextcloud. No Client ID, Client Secret or WARP is needed. The installer includes the pinned official cloudflared login component. Server-side eligibility and device authorization apply. Renew an expired session under Settings → Advanced → Browser sign-in. macOS File Provider is unsupported.
+          Enter https://nc.sairibus.com in the account wizard, sign in with your 再バ同アカウント in the browser, and approve the device in Nextcloud. No Client ID, Client Secret or WARP is needed. The installer includes cloudflared built from pinned source with a login retry patch and a pinned Go toolchain. Temporary discovery and token-transfer failures retry within the five-minute sign-in window. Server-side eligibility and device authorization apply. Renew an expired session under Settings → Advanced → Browser sign-in. macOS File Provider is unsupported.
 
           Verify the download against `SHA256SUMS`. `build-info.json` records the exact source commit. Complete GPL source is available from this release's source archives.
           """

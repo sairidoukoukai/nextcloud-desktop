@@ -1,11 +1,23 @@
 {
-  "version": "2026.10.3",
+  "version": "2026.10.3-sairibus.1",
   "source_commit": "de6376c5af4a67cbc65258682e5a01781827643d",
   "source_url": "https://codeload.github.com/cloudflare/cloudflared/tar.gz/de6376c5af4a67cbc65258682e5a01781827643d",
   "source_sha256": "6c6901ae333508e1c529184bf90cb87ff59592620d293401db38415269908311",
   "windows_amd64": {
-    "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.10.3/cloudflared-windows-amd64.exe",
-    "sha256": "76b2805253d0d6ffacb092a7acfbee99e7af6917835c0c5410e23f3ef5052da2",
+    "sha256": "6be14b87d22967ebdbc0b70863599d2bc36c6df38a439a9492503185a9734a38",
     "installed_name": "nextcloud-cloudflared.exe"
+  },
+  "upstream_version": "2026.10.3",
+  "patch_sha256": "238a22bf101f79e8eecaa6175500d995d233d575b7968c7b07d82d7fe99d7bfb",
+  "go": {
+    "version": "go1.27.3",
+    "linux_amd64": {
+      "url": "https://go.dev/dl/go1.27.3.linux-amd64.tar.gz",
+      "sha256": "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40"
+    },
+    "windows_amd64": {
+      "url": "https://go.dev/dl/go1.27.3.windows-amd64.zip",
+      "sha256": "f26081f438319757f8a1b46d7d0b2c5ec7583d4038e485e0aa725cfde7885fff"
+    }
   }
 }
