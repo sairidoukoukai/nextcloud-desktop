@@ -104,7 +104,7 @@ jobs:
 
           Windows x64 installer. This preview is unsigned. Automatic updates from the official Nextcloud channel are disabled.
 
-          Source commit: `{info['source_commit']}`. Nine focused client test suites passed on the GitHub Windows runner. A silent installation check verified the executable and sync libraries against the tested build, plus the Start Menu launcher target. GUI startup and synchronization with the production server have not been tested by this workflow.
+          Source commit: `{info['source_commit']}`. Upstream stable-35.0 base: `{info['upstream_base']}`. Thirteen focused client test suites passed on the GitHub Windows runner. A silent installation check verified the executable and sync libraries against the tested build, plus the Start Menu launcher target. GUI startup and synchronization with the production server have not been tested by this workflow.
 
           Configure a separate Cloudflare Service Token for each device, then complete the normal Nextcloud browser login. Server-side device authorization is required. macOS File Provider is unsupported.
 

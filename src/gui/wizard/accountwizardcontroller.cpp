@@ -901,7 +901,7 @@ void AccountWizardController::slotFindServer()
 
 void AccountWizardController::slotFindServerBehindRedirect()
 {
-    auto redirectCheckJob = _account->sendRequest("GET", _account->url());
+    auto redirectCheckJob = new SimpleNetworkJob(_account);
     redirectCheckJob->setTimeout(qMin(2000ll, redirectCheckJob->timeoutMsec()));
 
     auto permanentRedirects = std::make_shared<int>(0);
@@ -924,6 +924,7 @@ void AccountWizardController::slotFindServerBehindRedirect()
         job->setTimeout((_account->url().scheme() == "https"_L1) ? 30 * 1000 : 10 * 1000);
         job->start();
     });
+    redirectCheckJob->startRequest("GET", _account->url());
 }
 
 void AccountWizardController::slotFoundServer(const QUrl &url, const QJsonObject &info)

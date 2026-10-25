@@ -67,7 +67,7 @@ try {
     $env:PATH = "$(Join-Path $root 'bin');$(Join-Path $root 'dev-utils/bin');$env:PATH"
     $env:QT_QPA_PLATFORM = 'offscreen'
     $env:QT_QUICK_BACKEND = 'software'
-    $tests = '^(CloudflareAccess|Cookies|AccountWizardController|AccountWizardWindowQml|SettingsDialog|PushNotifications|RemoteWipe|AccountState|ConnectionValidator)Test$'
+    $tests = '^(CloudflareAccess|Cookies|AccountWizardController|AccountWizardWindowQml|SettingsDialog|PushNotifications|RemoteWipe|AccountState|ConnectionValidator|WindowCloseQml|SyncEngine|SyncCfApi|UnifiedSharing)Test$'
     $inventory = & ctest --test-dir $build --show-only=json-v1 -R $tests
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate the client test suites.' }
     $inventoryPath = Join-Path $scratch 'test-inventory.json'
