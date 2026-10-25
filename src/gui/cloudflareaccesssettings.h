@@ -41,6 +41,7 @@ private:
     QLineEdit *_clientId;
     QLineEdit *_clientSecret;
     QPushButton *_apply;
+    QPushButton *_browserSignIn;
     QLabel *_error;
     QFormLayout *_form;
     bool _dirty = false;

@@ -4,6 +4,7 @@
  */
 
 #include <QTest>
+#include "cloudflarebrowsertestutils.h"
 #include <QVector>
 #include <QWebSocketServer>
 #include <QSignalSpy>
@@ -69,8 +70,16 @@ class TestPushNotifications : public QObject
     Q_OBJECT
 
 private Q_SLOTS:
+    void cloudflareTokenIsIncludedInHandshakeAndRemovedAfterDisabling_data()
+    {
+        QTest::addColumn<bool>("browser");
+        QTest::newRow("service") << false;
+        QTest::newRow("account-browser") << true;
+    }
+
     void cloudflareTokenIsIncludedInHandshakeAndRemovedAfterDisabling()
     {
+        QFETCH(bool, browser);
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const auto previous = OCC::ConfigFile().configPath();
@@ -93,7 +102,12 @@ private Q_SLOTS:
         server.setSslConfiguration(ssl);
         QVERIFY(server.listen(QHostAddress::LocalHost));
         const auto base = u"https://localhost:%1"_s.arg(server.serverPort());
-        access.save(true, base, u"client"_s, u"secret"_s);
+        const auto browserToken = OCC::Test::browserToken();
+        if (browser) {
+            access.saveBrowserToken(base, browserToken);
+        } else {
+            access.save(true, base, u"client"_s, u"secret"_s);
+        }
         const auto account =
             FakeWebSocketServer::createAccount(u"user"_s, u"password"_s, QUrl(base), QUrl(u"wss://localhost:%1/push"_s.arg(server.serverPort())), false);
         OCC::PushNotifications push(account.data(), nullptr, &access);
@@ -107,8 +121,13 @@ private Q_SLOTS:
         QTRY_VERIFY(connections.count() > 0);
         const auto first = server.nextPendingConnection();
         QVERIFY(first);
-        QCOMPARE(first->request().rawHeader("CF-Access-Client-Id"), "client");
-        QCOMPARE(first->request().rawHeader("CF-Access-Client-Secret"), "secret");
+        if (browser) {
+            QCOMPARE(first->request().rawHeader("cf-access-token"), browserToken);
+            QVERIFY(!first->request().hasRawHeader("CF-Access-Client-Secret"));
+        } else {
+            QCOMPARE(first->request().rawHeader("CF-Access-Client-Id"), "client");
+            QCOMPARE(first->request().rawHeader("CF-Access-Client-Secret"), "secret");
+        }
         first->deleteLater();
         connections.clear();
         access.save(false, {}, {}, {});
@@ -116,6 +135,7 @@ private Q_SLOTS:
         const auto second = server.nextPendingConnection();
         QVERIFY(second);
         QVERIFY(!second->request().hasRawHeader("CF-Access-Client-Secret"));
+        QVERIFY(!second->request().hasRawHeader("cf-access-token"));
         second->deleteLater();
     }
 

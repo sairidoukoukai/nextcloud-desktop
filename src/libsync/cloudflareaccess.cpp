@@ -4,6 +4,9 @@
  */
 
 #include "cloudflareaccess.h"
+#include <QDateTime>
+#include <QJsonArray>
+#include <QRegularExpression>
 
 #include "configfile.h"
 #include "creds/keychainchunk.h"
@@ -27,11 +30,14 @@ using namespace Qt::StringLiterals;
 namespace OCC
 {
 
-CloudflareAccess::CloudflareAccess(QObject *parent, CredentialStore store, std::chrono::milliseconds storageTimeout)
+CloudflareAccess::CloudflareAccess(QObject *parent, CredentialStore store, std::chrono::milliseconds storageTimeout, const QString &scope)
     : QObject(parent)
     , _store(std::move(store))
     , _storageTimeout(storageTimeout)
     , _configFile(ConfigFile().configFile())
+    , _settingsGroup(scope.isEmpty() ? u"CloudflareAccess"_s : u"CloudflareAccessAccounts/"_s + scope)
+    , _scope(scope)
+    , _instanceId(QUuid::createUuid().toString(QUuid::WithoutBraces))
 {
     load();
 }
@@ -58,7 +64,7 @@ bool CloudflareAccess::busy() const
 bool CloudflareAccess::ready() const
 {
     const auto lock = QMutexLocker(&_mutex);
-    return !_enabled || _ready;
+    return !_enabled || (_ready && (!_browserMode || _expiresAt > QDateTime::currentSecsSinceEpoch()));
 }
 QUrl CloudflareAccess::serverUrl() const
 {
@@ -78,7 +84,47 @@ QString CloudflareAccess::clientSecret() const
 QString CloudflareAccess::error() const
 {
     const auto lock = QMutexLocker(&_mutex);
-    return _error;
+    return _browserMode && _ready && _expiresAt <= QDateTime::currentSecsSinceEpoch()
+        ? tr("Your Cloudflare Access session expired. Sign in again in Advanced settings.")
+        : _error;
+}
+
+bool CloudflareAccess::browserMode() const
+{
+    const auto lock = QMutexLocker(&_mutex);
+    return _browserMode;
+}
+
+bool CloudflareAccess::hasCredentials(const QNetworkRequest &request)
+{
+    return request.hasRawHeader("CF-Access-Client-Id"_ba) || request.hasRawHeader("cf-access-token"_ba);
+}
+
+QString CloudflareAccess::browserTokenError(const QByteArray &token)
+{
+    constexpr auto maximumTokenBytes = 16384;
+    const auto parts = token.split('.');
+    if (token.size() > maximumTokenBytes || parts.size() != 3
+        || !QRegularExpression("\\A[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\z"_L1).match(QString::fromLatin1(token)).hasMatch()) {
+        return tr("The browser did not return a valid Cloudflare Access session.");
+    }
+    const auto header = QJsonDocument::fromJson(QByteArray::fromBase64(parts[0], QByteArray::Base64UrlEncoding)).object();
+    const auto claims = QJsonDocument::fromJson(QByteArray::fromBase64(parts[1], QByteArray::Base64UrlEncoding)).object();
+    const auto issuer = QUrl(claims.value("iss"_L1).toString());
+    const auto subject = claims.value("custom"_L1).toObject().value("sairibus_subject"_L1).toString();
+    if (header.value("alg"_L1).toString() != "RS256"_L1 || claims.value("type"_L1).toString() != "app"_L1 || issuer.scheme() != "https"_L1
+        || !issuer.host().endsWith(".cloudflareaccess.com"_L1) || !issuer.userInfo().isEmpty() || issuer.hasQuery() || issuer.hasFragment()
+        || issuer.port(443) != 443 || (!issuer.path().isEmpty() && issuer.path() != "/"_L1) || claims.contains("common_name"_L1)
+        || claims.value("sub"_L1).toString().isEmpty() || !QRegularExpression("\\A[0-9a-fA-F-]{36}\\z"_L1).match(subject).hasMatch()) {
+        return tr("Sign in with your Sairibus account to connect this device.");
+    }
+    const auto expiresAt = claims.value("exp"_L1).toInteger();
+    if (expiresAt <= QDateTime::currentSecsSinceEpoch()) {
+        return tr("Your Cloudflare Access session expired. Sign in again in Advanced settings.");
+    }
+    // The helper and Cloudflare edge verify signatures. These claims only guide
+    // local session lifetime and prevent accidentally switching account identity.
+    return {};
 }
 
 QUrl CloudflareAccess::origin(const QUrl &url)
@@ -130,17 +176,24 @@ QString CloudflareAccess::prepareRequest(QNetworkRequest &request) const
     auto headers = request.headers();
     headers.removeAll("CF-Access-Client-Id"_L1);
     headers.removeAll("CF-Access-Client-Secret"_L1);
+    headers.removeAll("cf-access-token"_L1);
     request.setHeaders(headers);
     request.setAttribute(ConfigurationEpochAttribute, {});
+    request.setAttribute(SessionIdentityAttribute, {});
     if (!protects(request.url())) {
         return {};
     }
     if (!ready()) {
-        return _error.isEmpty() ? tr("Cloudflare Access credentials are still loading.") : _error;
+        return error().isEmpty() ? tr("Cloudflare Access credentials are still loading.") : error();
     }
-    request.setRawHeader("CF-Access-Client-Id"_ba, _clientId.toLatin1());
-    request.setRawHeader("CF-Access-Client-Secret"_ba, _clientSecret.toLatin1());
+    if (_browserMode) {
+        request.setRawHeader("cf-access-token"_ba, _browserToken);
+    } else {
+        request.setRawHeader("CF-Access-Client-Id"_ba, _clientId.toLatin1());
+        request.setRawHeader("CF-Access-Client-Secret"_ba, _clientSecret.toLatin1());
+    }
     request.setAttribute(ConfigurationEpochAttribute, QVariant::fromValue(_generation));
+    request.setAttribute(SessionIdentityAttribute, _instanceId);
     const auto policy = request.attribute(QNetworkRequest::RedirectPolicyAttribute);
     if (policy.isValid() && policy.toInt() != QNetworkRequest::ManualRedirectPolicy) {
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::SameOriginRedirectPolicy);
@@ -152,13 +205,14 @@ bool CloudflareAccess::matchesCurrentRequest(const QNetworkRequest &request) con
 {
     const auto lock = QMutexLocker(&_mutex);
     return _enabled && _ready && !_busy && origin(request.url()) == _serverUrl && request.attribute(ConfigurationEpochAttribute).isValid()
-        && request.attribute(ConfigurationEpochAttribute).toULongLong() == _generation;
+        && request.attribute(ConfigurationEpochAttribute).toULongLong() == _generation && request.attribute(SessionIdentityAttribute).toString() == _instanceId;
 }
 
 QString CloudflareAccess::credentialKey() const
 {
     const auto profile = QFileInfo(_configFile).absoluteFilePath().toUtf8();
-    return Theme::instance()->appName() + ":cloudflare-access:"_L1 + QString::fromLatin1(QCryptographicHash::hash(profile, QCryptographicHash::Sha256).toHex());
+    return Theme::instance()->appName() + ":cloudflare-access:"_L1 + QString::fromLatin1(QCryptographicHash::hash(profile, QCryptographicHash::Sha256).toHex())
+        + u':' + _scope;
 }
 
 void CloudflareAccess::storeCredential(const QString &key, const std::optional<QByteArray> &data, Completion completion)
@@ -220,8 +274,11 @@ void CloudflareAccess::load()
     const auto lock = QMutexLocker(&_mutex);
     ++_generation;
     auto settings = QSettings(_configFile, QSettings::IniFormat);
-    settings.beginGroup("CloudflareAccess"_L1);
+    settings.beginGroup(_settingsGroup);
     _enabled = settings.value("Enabled"_L1, false).toBool();
+    _browserMode = settings.value("BrowserLogin"_L1, false).toBool();
+    _browserToken.clear();
+    _expiresAt = 0;
     _serverUrl = origin(settings.value("ServerUrl"_L1).toUrl());
     _credentialEntry = settings.value("CredentialKey"_L1).toString();
     _ready = false;
@@ -241,7 +298,14 @@ void CloudflareAccess::load()
         _clientSecret = token.value("secret"_L1).toString();
         _error = error;
         if (_error.isEmpty()) {
-            _error = validate(true, _serverUrl.toString(), _clientId, _clientSecret);
+            _browserToken = token.value("token"_L1).toString().toLatin1();
+            _error = _browserMode ? browserTokenError(_browserToken) : validate(true, _serverUrl.toString(), _clientId, _clientSecret);
+            if (_browserMode && _error.isEmpty()) {
+                _expiresAt = QJsonDocument::fromJson(QByteArray::fromBase64(_browserToken.split('.')[1], QByteArray::Base64UrlEncoding))
+                                 .object()
+                                 .value("exp"_L1)
+                                 .toInteger();
+            }
             if (token.value("origin"_L1).toString() != _serverUrl.toString()) {
                 _error = tr("Cloudflare Access credentials do not match the configured server. Enter the service token again.");
             }
@@ -258,8 +322,61 @@ void CloudflareAccess::load()
 
 void CloudflareAccess::save(bool enabled, const QString &url, const QString &id, const QString &secret, ConfigurationCheck check)
 {
+    saveToken(enabled, url, id, secret, {}, std::move(check));
+}
+
+void CloudflareAccess::saveBrowserToken(const QString &url, const QByteArray &token)
+{
+    saveToken(true, url, {}, {}, token, {});
+}
+
+void CloudflareAccess::cancelPending()
+{
     const auto lock = QMutexLocker(&_mutex);
-    if (const auto validation = validate(enabled, url, id, secret); !validation.isEmpty()) {
+    if (!_busy) {
+        return;
+    }
+    ++_generation;
+    _busy = false;
+    _error = tr("Browser sign-in was cancelled.");
+    Q_EMIT changed();
+    Q_EMIT saved(false);
+}
+
+void CloudflareAccess::clear()
+{
+    const auto lock = QMutexLocker(&_mutex);
+    const auto cancelled = _busy;
+    ++_generation;
+    removeCredential(_credentialEntry);
+    auto settings = QSettings(_configFile, QSettings::IniFormat);
+    settings.remove(_settingsGroup);
+    settings.sync();
+    _credentialEntry.clear();
+    _browserToken.clear();
+    _clientId.clear();
+    _clientSecret.clear();
+    _enabled = _busy = _ready = _browserMode = false;
+    _error.clear();
+    Q_EMIT changed();
+    Q_EMIT configurationChanged();
+    if (cancelled) {
+        Q_EMIT saved(false);
+    }
+}
+
+void CloudflareAccess::saveToken(bool enabled,
+                                 const QString &url,
+                                 const QString &id,
+                                 const QString &secret,
+                                 const QByteArray &browserToken,
+                                 ConfigurationCheck check)
+{
+    const auto lock = QMutexLocker(&_mutex);
+    const auto browser = !browserToken.isEmpty();
+    const auto tokenError = browser ? browserTokenError(browserToken) : QString{};
+    const auto validation = tokenError.isEmpty() ? validate(enabled, url, browser ? "browser"_L1 : id, browser ? "browser"_L1 : secret) : tokenError;
+    if (!validation.isEmpty()) {
         _error = validation;
         Q_EMIT changed();
         Q_EMIT saved(false);
@@ -280,7 +397,26 @@ void CloudflareAccess::save(bool enabled, const QString &url, const QString &id,
             return;
         }
     }
-    const auto payload = QJsonDocument(QJsonObject{{"origin"_L1, server.toString()}, {"id"_L1, id}, {"secret"_L1, secret}}).toJson(QJsonDocument::Compact);
+    if (browser && _browserMode && !_browserToken.isEmpty()) {
+        const auto subject = [](const QByteArray &value) {
+            const auto parts = value.split('.');
+            return QJsonDocument::fromJson(QByteArray::fromBase64(parts.value(1), QByteArray::Base64UrlEncoding))
+                .object()
+                .value("custom"_L1)
+                .toObject()
+                .value("sairibus_subject"_L1)
+                .toString();
+        };
+        if (subject(browserToken) != subject(_browserToken)) {
+            _error = tr("Sign in with the same Sairibus account used when adding this Nextcloud account.");
+            Q_EMIT changed();
+            Q_EMIT saved(false);
+            return;
+        }
+    }
+    const auto payload =
+        QJsonDocument(QJsonObject{{"origin"_L1, server.toString()}, {"id"_L1, id}, {"secret"_L1, secret}, {"token"_L1, QString::fromLatin1(browserToken)}})
+            .toJson(QJsonDocument::Compact);
     if (enabled && payload.size() > KeychainChunk::ChunkSize * KeychainChunk::MaxChunks) {
         _error = tr("Cloudflare Access credentials are too long for the system credential store.");
         Q_EMIT changed();
@@ -292,15 +428,16 @@ void CloudflareAccess::save(bool enabled, const QString &url, const QString &id,
     _error.clear();
     Q_EMIT changed();
     const auto entry = enabled ? credentialKey() + u':' + QUuid::createUuid().toString(QUuid::WithoutBraces) : _credentialEntry;
-    const auto persist = [this, enabled, server, id, secret, entry, check](const QByteArray &, const QString &error) {
+    const auto persist = [this, enabled, server, id, secret, browserToken, browser, entry, check](const QByteArray &, const QString &error) {
         _error = error;
         if (_error.isEmpty() && enabled && check) {
             _error = check(server);
         }
         if (_error.isEmpty()) {
             auto settings = QSettings(_configFile, QSettings::IniFormat);
-            settings.beginGroup("CloudflareAccess"_L1);
+            settings.beginGroup(_settingsGroup);
             settings.setValue("Enabled"_L1, enabled);
+            settings.setValue("BrowserLogin"_L1, browser);
             if (!server.isEmpty()) {
                 settings.setValue("ServerUrl"_L1, server);
             }
@@ -314,6 +451,13 @@ void CloudflareAccess::save(bool enabled, const QString &url, const QString &id,
                 if (enabled) {
                     _clientId = id;
                     _clientSecret = secret;
+                    _browserMode = browser;
+                    _browserToken = browserToken;
+                    _expiresAt = browser ? QJsonDocument::fromJson(QByteArray::fromBase64(browserToken.split('.')[1], QByteArray::Base64UrlEncoding))
+                                               .object()
+                                               .value("exp"_L1)
+                                               .toInteger()
+                                         : 0;
                     _ready = true;
                     const auto previous = _credentialEntry;
                     _credentialEntry = entry;
@@ -339,5 +483,4 @@ void CloudflareAccess::save(bool enabled, const QString &url, const QString &id,
     }
     storeCredential(entry, payload, persist);
 }
-
 }

@@ -5,7 +5,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 -->
 # Nextcloud Desktop with Cloudflare Access
 
-An unofficial fork maintained by 再履バス同好会 (Sairibus), based on Nextcloud Desktop 35.0.0 with the subsequent `stable-35.0` fixes through [`76ef152`](https://github.com/nextcloud/desktop/commit/76ef152f8c98009c910f124af1da20876e3915e9). It adds Cloudflare Access Service Token settings to the classic desktop client and retains Nextcloud's browser login and per-device app password.
+An unofficial fork maintained by 再履バス同好会 (Sairibus), based on Nextcloud Desktop 35.0.0 with the subsequent `stable-35.0` fixes through [`76ef152`](https://github.com/nextcloud/desktop/commit/76ef152f8c98009c910f124af1da20876e3915e9). It connects the classic desktop client through Cloudflare Access browser login and Nextcloud's per-device authorization.
 
 [Download releases](https://github.com/sairidoukoukai/nextcloud-desktop/releases) · [Upstream project](https://github.com/nextcloud/desktop)
 
@@ -13,19 +13,23 @@ An unofficial fork maintained by 再履バス同好会 (Sairibus), based on Next
 
 Releases target Windows x64. Installers are unsigned. This fork disables the official automatic updater; install subsequent releases from this repository.
 
-1. Obtain a separate Cloudflare **Client ID** and **Client Secret** for your device from the server operator.
-2. Enter the HTTPS Nextcloud address in the account wizard. Open **Cloudflare Access…** before checking the server, enable it, and enter the token pair.
-3. Complete the normal browser login. Nextcloud then issues the device's app password for synchronization.
+1. Enter **https://nc.sairibus.com** in the account wizard and continue.
+2. Sign in with your **再バ同アカウント** in the browser using a passkey or email code.
+3. Approve the device in Nextcloud, then choose the folders to sync.
 
-Existing accounts can update the token under **Settings → Advanced → Cloudflare Access**. Installing the client does not grant server access: the operator must authorize the token and enable Nextcloud's native login flow.
+The installer includes Cloudflare's login component. Members need no Client ID, Client Secret, WARP or separate command-line installation. When the Access session expires, open **Settings → Advanced**, select the account and choose **Browser sign-in**. The existing Nextcloud device password is retained.
+
+The server operator controls eligibility and must enable device authorization. The club's member UID review still applies. Other Cloudflare-protected servers can use administrator-issued service credentials through **Cloudflare Access…**.
 
 ## Credential handling
 
-The service token is stored in the operating system's credential store. One HTTPS hostname and port can be configured per profile; its accounts share the token. Replacing that origin requires disabling the existing setting first. Requests to other origins receive no token.
+Browser sessions are stored in the operating system's credential store, separately for each local account UUID and exact HTTPS origin. Each account retains its own Nextcloud device password. Reauthentication requires the same central identity used during setup.
 
-Diagnostic logs redact token headers and credential exchanges. The client discards reusable Access cookies. Access failures preserve the native app password until a fresh, bounded `status.php` check confirms the protected server is reachable. Keep that endpoint under the same Access policy as DAV and API requests.
+The bundled helper runs with a disposable private cache. Application and organization tokens written there are removed after completion or cancellation. The client checks the helper's pinned SHA-256 before starting it. HTTP diagnostics redact Access headers and cookies and omit protected request bodies. Cross-origin requests receive no Access token.
 
-Retire a device by revoking both its Cloudflare Service Token and its Nextcloud app password. Keep the token out of support messages and installers. macOS File Provider is unsupported; classic macOS sync is the intended path. macOS and Linux installers are not part of the initial Windows release.
+To retire a device, revoke its Nextcloud application password and its Cloudflare session. Removing an account also clears its locally stored Access session. The legacy service-credential mode shares one origin's credentials within a profile.
+
+macOS File Provider is unsupported. This release provides a Windows x64 installer.
 
 ## Build and release
 
@@ -36,6 +40,8 @@ A [small patch](admin/club/patches/0001-nextcloud-blueprint-packaging.patch) rep
 The installation check uses NSIS's explicit all-users mode on a fresh 64-bit runner. It compares the installed executable and sync libraries with the tested build and checks the Start Menu shortcut's target.
 
 The **Sairibus Windows release** workflow runs manually from `main`. It rejects other refs, stale source commits, invalid tags and existing tags. Publication rechecks `main` and the artifact checksums. Each publication is a regular GitHub release marked as Latest. Releases include `SHA256SUMS`, `build-info.json`, and the complete source archives.
+
+The installer bundles official cloudflared 2026.10.3, verified against [the pinned binary and source hashes](admin/club/cloudflared.json). Dependency license notices are collected from the authenticated Go modules and included with the helper. The silent installation check verifies the installed helper and notices.
 
 Release automation uses standard GitHub-hosted runners. No signing credentials or server credentials are required. Review changes through pull requests before running a release.
 

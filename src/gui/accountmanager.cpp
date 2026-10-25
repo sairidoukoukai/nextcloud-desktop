@@ -5,6 +5,7 @@
  */
 
 #include "accountmanager.h"
+#include "cloudflareaccess.h"
 
 #include "config.h"
 #include "sslerrordialog.h"
@@ -814,6 +815,7 @@ void AccountManager::removeAccountState(OCC::AccountState *account, AccountRemov
 
         // Forget account credentials, cookies
         account->account()->credentials()->forgetSensitiveData();
+        account->account()->browserAccess()->clear();
         QFile::remove(account->account()->cookieJarPath());
     }
 

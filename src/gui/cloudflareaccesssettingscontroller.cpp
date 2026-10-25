@@ -4,6 +4,7 @@
  */
 
 #include "cloudflareaccesssettingscontroller.h"
+#include "cloudflarebrowserlogin.h"
 
 #include "accountmanager.h"
 #include "cloudflareaccess.h"
@@ -13,11 +14,23 @@ using namespace Qt::StringLiterals;
 namespace OCC
 {
 
-CloudflareAccessSettingsController::CloudflareAccessSettingsController(QObject *parent, CloudflareAccess *access)
+CloudflareAccessSettingsController::CloudflareAccessSettingsController(QObject *parent, CloudflareAccess *access, CloudflareBrowserLogin *browserLogin)
     : QObject(parent)
     , _access(access ? access : CloudflareAccess::instance())
+    , _browserLogin(browserLogin ? browserLogin : new CloudflareBrowserLogin(this))
 {
     connect(_access, &CloudflareAccess::changed, this, &CloudflareAccessSettingsController::changed);
+    connect(_browserLogin, &CloudflareBrowserLogin::finished, this, [this](const QByteArray &token, const QString &error) {
+        _validationError = error;
+        if (!_browserAccess || !error.isEmpty()) {
+            Q_EMIT changed();
+            Q_EMIT browserFinished(false);
+            return;
+        }
+        _browserSaving = true;
+        Q_EMIT changed();
+        _browserAccess->saveBrowserToken(_browserUrl, token);
+    });
     connect(_access, &CloudflareAccess::saved, this, [this](bool success) {
         if (_saving) {
             _saving = false;
@@ -26,13 +39,65 @@ CloudflareAccessSettingsController::CloudflareAccessSettingsController(QObject *
     });
 }
 
+void CloudflareAccessSettingsController::setBrowserAccess(CloudflareAccess *access)
+{
+    if (_browserAccess == access || _browserLogin->busy() || _browserSaving) {
+        return;
+    }
+    if (_browserAccess) {
+        disconnect(_browserAccess, nullptr, this, nullptr);
+    }
+    _browserAccess = access;
+    if (access) {
+        connect(access, &QObject::destroyed, this, [this] {
+            _browserSaving = false;
+            _browserLogin->cancel();
+            Q_EMIT changed();
+        });
+        connect(access, &CloudflareAccess::changed, this, &CloudflareAccessSettingsController::changed);
+        connect(access, &CloudflareAccess::saved, this, [this](bool success) {
+            if (!_browserSaving) {
+                return;
+            }
+            _browserSaving = false;
+            _validationError = success ? QString{} : _browserAccess->error();
+            Q_EMIT changed();
+            Q_EMIT browserFinished(success);
+        });
+    }
+}
+
+void CloudflareAccessSettingsController::signInBrowser(const QString &serverUrl)
+{
+    if (busy()) {
+        return;
+    }
+    _validationError = _browserAccess ? accountCompatibilityError(QUrl(serverUrl)) : tr("Select a Nextcloud account first.");
+    if (!_validationError.isEmpty()) {
+        Q_EMIT changed();
+        Q_EMIT browserFinished(false);
+        return;
+    }
+    _browserUrl = serverUrl;
+    _browserLogin->start(QUrl(serverUrl));
+    Q_EMIT changed();
+}
+
+void CloudflareAccessSettingsController::cancelBrowserSignIn()
+{
+    _browserLogin->cancel();
+    if (_browserSaving && _browserAccess) {
+        _browserAccess->cancelPending();
+    }
+}
+
 bool CloudflareAccessSettingsController::enabled() const
 {
     return _access->enabled();
 }
 bool CloudflareAccessSettingsController::busy() const
 {
-    return _access->busy();
+    return _access->busy() || (_browserAccess && _browserAccess->busy()) || _browserLogin->busy() || _browserSaving;
 }
 QString CloudflareAccessSettingsController::serverUrl() const
 {

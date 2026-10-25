@@ -56,7 +56,8 @@ AccountState::AccountState(const AccountPtr &account)
         this, &AccountState::slotHandleRemoteWipeCheck);
     connect(account.data(), &Account::cloudflareAccessCheckFailed, this, [this] {
         if (!isSignedOut()) {
-            _connectionErrors = {tr("Cloudflare Access could not be verified. Check the service token and server availability.")};
+            _connectionErrors = {
+                tr("Cloudflare Access could not be verified. Sign in again under Settings → Advanced → Browser sign-in, or check server availability.")};
             setState(NetworkError);
         }
     });
@@ -99,11 +100,18 @@ AccountState::AccountState(const AccountPtr &account)
     QTimer::singleShot(0, this, &AccountState::slotCheckConnection);
     const auto accessManager = qobject_cast<AccessManager *>(account->networkAccessManager());
     const auto access = accessManager ? accessManager->cloudflareAccess() : CloudflareAccess::instance();
-    connect(access, &CloudflareAccess::configurationChanged, this, [this] {
+    connect(account->browserAccess(), &CloudflareAccess::configurationChanged, this, [this] {
         if (!isSignedOut()) {
             checkConnectivity();
         }
     });
+    if (access != account->browserAccess()) {
+        connect(access, &CloudflareAccess::configurationChanged, this, [this] {
+            if (!isSignedOut()) {
+                checkConnectivity();
+            }
+        });
+    }
 }
 
 AccountState::~AccountState() = default;
@@ -304,7 +312,8 @@ void AccountState::checkConnectivity()
 {
     qCInfo(lcAccountState()) << "check connectivity";
 
-    const auto access = CloudflareAccess::instance();
+    const auto manager = qobject_cast<AccessManager *>(account()->networkAccessManager());
+    const auto access = manager ? manager->cloudflareAccess() : CloudflareAccess::instance();
     if (access->protects(account()->url()) && access->busy()) {
         return;
     }

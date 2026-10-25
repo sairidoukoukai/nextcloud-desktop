@@ -83,14 +83,15 @@ namespace OCC {
 bool HttpLogger::bodyLoggingAllowed(const QNetworkRequest &request)
 {
     return !request.attribute(SensitiveBodyAttribute).toBool() && !request.hasRawHeader("CF-Access-Client-Id")
-        && !request.hasRawHeader("CF-Access-Client-Secret");
+        && !request.hasRawHeader("CF-Access-Client-Secret") && !request.hasRawHeader("cf-access-token");
 }
 
 QByteArray HttpLogger::redactedHeaderValue(const QByteArray &name, const QByteArray &value)
 {
     if (name.compare("CF-Access-Client-Id", Qt::CaseInsensitive) == 0 || name.compare("CF-Access-Client-Secret", Qt::CaseInsensitive) == 0
         || name.compare("Cookie", Qt::CaseInsensitive) == 0 || name.compare("Set-Cookie", Qt::CaseInsensitive) == 0
-        || name.compare("Cf-Access-Jwt-Assertion", Qt::CaseInsensitive) == 0 || name.compare("Proxy-Authorization", Qt::CaseInsensitive) == 0) {
+        || name.compare("cf-access-token", Qt::CaseInsensitive) == 0 || name.compare("Cf-Access-Jwt-Assertion", Qt::CaseInsensitive) == 0
+        || name.compare("Proxy-Authorization", Qt::CaseInsensitive) == 0) {
         return "[redacted]";
     }
     if (name.compare("Authorization", Qt::CaseInsensitive) == 0) {

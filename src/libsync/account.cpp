@@ -277,6 +277,14 @@ QColor Account::accentColor() const
     return adjusted;
 }
 
+CloudflareAccess *Account::browserAccess()
+{
+    if (!_browserAccess) {
+        _browserAccess = new CloudflareAccess(this, {}, std::chrono::seconds(30), _uuid.toString(QUuid::WithoutBraces));
+    }
+    return _browserAccess;
+}
+
 QString Account::id() const
 {
     return _id;
@@ -313,6 +321,9 @@ void Account::setCredentials(AbstractCredentials *cred)
     // This is necessary to avoid issues with the QNAM being deleted while
     // processing slotHandleSslErrors().
     _networkAccessManager = QSharedPointer<QNetworkAccessManager>(_credentials->createQNAM(), &QObject::deleteLater);
+    if (const auto manager = qobject_cast<AccessManager *>(_networkAccessManager.data())) {
+        manager->setBrowserAccess(browserAccess());
+    }
     advanceCredentialEpoch();
 
     if (jar) {
@@ -457,6 +468,9 @@ void Account::resetNetworkAccessManager()
     // Use a QSharedPointer to allow locking the life of the QNAM on the stack.
     // Make it call deleteLater to make sure that we can return to any QNAM stack frames safely.
     _networkAccessManager = QSharedPointer<QNetworkAccessManager>(_credentials->createQNAM(), &QObject::deleteLater);
+    if (const auto manager = qobject_cast<AccessManager *>(_networkAccessManager.data())) {
+        manager->setBrowserAccess(browserAccess());
+    }
     advanceCredentialEpoch();
 
     _networkAccessManager->setCookieJar(jar); // takes ownership of the old cookie jar
@@ -767,7 +781,7 @@ void Account::cancelCloudflareCredentialCheck()
 
 void Account::handleInvalidCredentials(QNetworkReply *reply)
 {
-    if (reply && reply->request().hasRawHeader("CF-Access-Client-Id")) {
+    if (reply && CloudflareAccess::hasCredentials(reply->request())) {
         const auto accountManager = qobject_cast<AccessManager *>(networkAccessManager());
         const auto access = accountManager ? accountManager->cloudflareAccess() : nullptr;
         const auto challengedRequest = reply->request();
