@@ -5,6 +5,7 @@
  */
 
 #include <QJsonDocument>
+#include "cloudflareaccess.h"
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QLoggingCategory>
@@ -227,8 +228,10 @@ void ConnectionValidator::slotAuthFailed(QNetworkReply *reply)
         _errors << job->errorStringParsingBody();
         stat = SslError;
 
-    } else if (reply->error() == QNetworkReply::AuthenticationRequiredError
-        || !_account->credentials()->stillValid(reply)) {
+    } else if (reply->error() == QNetworkReply::AuthenticationRequiredError && CloudflareAccess::hasCredentials(reply->request())) {
+        _errors << tr("Cloudflare Access or Nextcloud rejected the request. Renew your Access session or check its service-token policy.");
+        stat = Timeout;
+    } else if (reply->error() == QNetworkReply::AuthenticationRequiredError || !_account->credentials()->stillValid(reply)) {
         qCWarning(lcConnectionValidator) << "******** Password is wrong!" << reply->error() << job->errorString();
         _errors << tr("The provided credentials are not correct");
         stat = CredentialsWrong;

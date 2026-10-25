@@ -1183,10 +1183,10 @@ void DetermineAuthTypeJob::start()
     // Start two parallel requests
 
     // 1. determines whether it's a basic auth server
-    auto get = _account->sendRequest("GET", _account->url(), req);
+    auto get = new SimpleNetworkJob(_account);
 
     // 2. checks the HTTP auth method.
-    auto propfind = _account->sendRequest("PROPFIND", _account->davUrl(), req);
+    auto propfind = new SimpleNetworkJob(_account);
 
     get->setTimeout(30 * 1000);
     propfind->setTimeout(30 * 1000);
@@ -1220,6 +1220,8 @@ void DetermineAuthTypeJob::start()
         _propfindDone = true;
         checkAllDone();
     });
+    get->startRequest("GET", _account->url(), req);
+    propfind->startRequest("PROPFIND", _account->davUrl(), req);
 }
 
 void DetermineAuthTypeJob::checkAllDone()

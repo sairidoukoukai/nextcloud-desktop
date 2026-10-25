@@ -9,6 +9,7 @@
 #include "account.h"
 #include "config.h"
 #include "guiutility.h"
+#include "httplogger.h"
 #include "networkjobs.h"
 #include "theme.h"
 
@@ -79,10 +80,11 @@ void Flow2Auth::fetchNewToken(const TokenAction action)
 
     // add 'Content-Length: 0' header (see https://github.com/nextcloud/desktop/issues/1473)
     QNetworkRequest request;
+    request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
     request.setHeader(QNetworkRequest::ContentLengthHeader, "0");
     request.setHeader(QNetworkRequest::UserAgentHeader, Utility::userAgentString());
 
-    auto job = _account->sendRequest("POST", loginV2url, request);
+    auto job = new SimpleNetworkJob(_account->sharedFromThis());
     job->setTimeout(qMin(30 * 1000ll, job->timeoutMsec()));
 
     QObject::connect(job, &SimpleNetworkJob::finishedSignal, this, [this, action](QNetworkReply *reply) {
@@ -148,6 +150,7 @@ void Flow2Auth::fetchNewToken(const TokenAction action)
         _isBusy = false;
         _hasToken = true;
     });
+    job->startRequest("POST", loginV2url, request);
 }
 
 void Flow2Auth::slotPollTimerTimeout()
@@ -168,13 +171,14 @@ void Flow2Auth::slotPollTimerTimeout()
 
     // Step 2: Poll
     QNetworkRequest request;
+    request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
 
     auto requestBody = new QBuffer;
     QUrlQuery arguments(QStringLiteral("token=%1").arg(_pollToken));
     requestBody->setData(arguments.query(QUrl::FullyEncoded).toLatin1());
 
-    auto job = _account->sendRequest("POST", _pollEndpoint, request, requestBody);
+    auto job = new SimpleNetworkJob(_account->sharedFromThis());
     job->setTimeout(qMin(30 * 1000ll, job->timeoutMsec()));
 
     QObject::connect(job, &SimpleNetworkJob::finishedSignal, this, [this](QNetworkReply *reply) {
@@ -220,6 +224,7 @@ void Flow2Auth::slotPollTimerTimeout()
         _isBusy = false;
         _hasToken = false;
     });
+    job->startRequest("POST", _pollEndpoint, request, requestBody);
 }
 
 QJsonObject Flow2Auth::handleResponse(QNetworkReply *reply)

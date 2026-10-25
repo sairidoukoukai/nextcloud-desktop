@@ -8,17 +8,22 @@
 
 #include "accountmanager.h"
 #include <QNetworkAccessManager>
+#include <functional>
 
 class QJsonDocument;
 class TestRemoteWipe;
 
 namespace OCC {
 
+class CloudflareAccess;
+
 class RemoteWipe : public QObject
 {
     Q_OBJECT
 public:
-    explicit RemoteWipe(AccountPtr account, QObject *parent = nullptr);
+    using PasswordCompletion = std::function<void(QString)>;
+    using PasswordReader = std::function<void(PasswordCompletion)>;
+    explicit RemoteWipe(AccountPtr account, QObject *parent = nullptr, CloudflareAccess *cloudflareAccess = nullptr, PasswordReader reader = {});
 
 Q_SIGNALS:
     /**
@@ -59,9 +64,24 @@ private Q_SLOTS:
 
 
 private:
+    void clearAccessCredentials();
+    void readAccessPassword();
+    void startCheckJob(QString password, bool preserveCredentials);
+    [[nodiscard]] AccountState *registeredAccount() const;
+    void boundReply(QNetworkReply *reply);
     AccountPtr _account;
+    PasswordReader _passwordReader;
+    quint64 _passwordReadGeneration = 0;
+    QPointer<CloudflareAccess> _accessOverride;
+    QPointer<CloudflareAccess> _accessSnapshot;
     QString _appPassword;
     bool _canWipeLocalFiles = false;
+    bool _preserveCredentials = false;
+    bool _passwordReadPending = false;
+    bool _cancelled = false;
+    bool _wipeAuthorized = false;
+    quint64 _requestEpoch = 0;
+    QUrl _requestUrl;
     QNetworkAccessManager *_networkManager = nullptr;
     QNetworkReply *_networkReplyCheck = nullptr;
     QNetworkReply *_networkReplySuccess = nullptr;

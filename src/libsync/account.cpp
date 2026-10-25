@@ -9,11 +9,13 @@
 #include "accountfwd.h"
 #include "capabilities.h"
 #include "clientsideencryptionjobs.h"
+#include "cloudflareaccess.h"
 #include "common/remotepermissions.h"
 #include "common/utility.h"
 #include "configfile.h"
 #include "cookiejar.h"
 #include "creds/abstractcredentials.h"
+#include "httplogger.h"
 #include "networkjobs.h"
 #include "pushnotifications.h"
 #include "theme.h"
@@ -51,9 +53,12 @@
 
 #include <qt6keychain/keychain.h>
 
+#include <algorithm>
+
 #include "creds/abstractcredentials.h"
 
 using namespace QKeychain;
+using namespace Qt::StringLiterals;
 
 namespace {
 constexpr int pushNotificationsReconnectInterval = 1000 * 60 * 2;
@@ -272,6 +277,14 @@ QColor Account::accentColor() const
     return adjusted;
 }
 
+CloudflareAccess *Account::cloudflareAccess()
+{
+    if (!_accountAccess) {
+        _accountAccess = new CloudflareAccess(this, {}, std::chrono::seconds(30), _uuid.toString(QUuid::WithoutBraces));
+    }
+    return _accountAccess;
+}
+
 QString Account::id() const
 {
     return _id;
@@ -284,6 +297,7 @@ AbstractCredentials *Account::credentials() const
 
 void Account::setCredentials(AbstractCredentials *cred)
 {
+    advanceCredentialEpoch();
     // set active credential manager
     QNetworkCookieJar *jar = nullptr;
     QNetworkProxy proxy;
@@ -307,6 +321,10 @@ void Account::setCredentials(AbstractCredentials *cred)
     // This is necessary to avoid issues with the QNAM being deleted while
     // processing slotHandleSslErrors().
     _networkAccessManager = QSharedPointer<QNetworkAccessManager>(_credentials->createQNAM(), &QObject::deleteLater);
+    if (const auto manager = qobject_cast<AccessManager *>(_networkAccessManager.data())) {
+        manager->setAccountAccess(cloudflareAccess());
+    }
+    advanceCredentialEpoch();
 
     if (jar) {
         _networkAccessManager->setCookieJar(jar);
@@ -450,6 +468,10 @@ void Account::resetNetworkAccessManager()
     // Use a QSharedPointer to allow locking the life of the QNAM on the stack.
     // Make it call deleteLater to make sure that we can return to any QNAM stack frames safely.
     _networkAccessManager = QSharedPointer<QNetworkAccessManager>(_credentials->createQNAM(), &QObject::deleteLater);
+    if (const auto manager = qobject_cast<AccessManager *>(_networkAccessManager.data())) {
+        manager->setAccountAccess(cloudflareAccess());
+    }
+    advanceCredentialEpoch();
 
     _networkAccessManager->setCookieJar(jar); // takes ownership of the old cookie jar
     _networkAccessManager->setProxy(proxy);   // Remember proxy (issue #2108)
@@ -584,6 +606,7 @@ void Account::setSslErrorHandler(AbstractSslErrorHandler *handler)
 
 void Account::setUrl(const QUrl &url)
 {
+    advanceCredentialEpoch();
     const QRegularExpression discoverPublicLinks(R"(((https|http)://[^/]*).*/s/([^/]*)$)");
     const auto isPublicLink = discoverPublicLinks.match(url.toString());
     if (isPublicLink.hasMatch()) {
@@ -707,6 +730,7 @@ void Account::slotHandleSslErrors(QNetworkReply *reply, QList<QSslError> errors)
 
 void Account::slotCredentialsFetched()
 {
+    advanceCredentialEpoch();
     if (_davUser.isEmpty()) {
         qCDebug(lcAccount) << "User id not set. Fetch it.";
         const auto fetchUserNameJob = new JsonApiJob(sharedFromThis(), QStringLiteral("/ocs/v1.php/cloud/user"));
@@ -733,11 +757,39 @@ void Account::slotCredentialsFetched()
 
 void Account::slotCredentialsAsked()
 {
+    advanceCredentialEpoch();
     Q_EMIT credentialsAsked(_credentials.data());
 }
 
-void Account::handleInvalidCredentials()
+void Account::advanceCredentialEpoch()
 {
+    ++_nativeCredentialEpoch;
+    if (const auto manager = qobject_cast<AccessManager *>(networkAccessManager())) {
+        manager->setNativeCredentialEpoch(_nativeCredentialEpoch);
+    }
+}
+
+void Account::handleInvalidCredentials(QNetworkReply *reply)
+{
+    if (reply && CloudflareAccess::hasCredentials(reply->request())) {
+        const auto accountManager = qobject_cast<AccessManager *>(networkAccessManager());
+        const auto access = accountManager ? accountManager->cloudflareAccess() : nullptr;
+        const auto challengedRequest = reply->request();
+        const auto nativeEpoch = challengedRequest.attribute(AccessManager::NativeCredentialEpochAttribute).toULongLong();
+        if (!access || !access->matchesCurrentRequest(challengedRequest) || !credentials()->ready()
+            || !challengedRequest.attribute(AccessManager::NativeCredentialEpochAttribute).isValid() || nativeEpoch != _nativeCredentialEpoch) {
+            return;
+        }
+        if (!access->protects(url())) {
+            Q_EMIT cloudflareAccessCheckFailed();
+            return;
+        }
+        // An Access application's paths can have different policies. A successful
+        // status.php response cannot identify who rejected this request.
+        Q_EMIT cloudflareRemoteWipeCheckRequested();
+        Q_EMIT cloudflareAccessCheckFailed();
+        return;
+    }
     // Retrieving password will trigger remote wipe check job
     retrieveAppPassword();
 
@@ -924,7 +976,7 @@ void Account::writeAppPasswordOnce(const QString &appPassword)
     job->start();
 }
 
-void Account::retrieveAppPassword()
+void Account::retrieveAppPassword(bool requireCurrentCredentials, std::function<void(QString)> callback)
 {
     const auto key = QString(credentials()->user() + app_password);
     const auto keychainKey = AbstractCredentials::keychainKey(
@@ -936,7 +988,20 @@ void Account::retrieveAppPassword()
     auto job = new ReadPasswordJob(Theme::instance()->appName());
     job->setInsecureFallback(false);
     job->setKey(keychainKey);
-    connect(job, &ReadPasswordJob::finished, [this](Job *incoming) {
+    const auto server = url();
+    const auto epoch = _nativeCredentialEpoch;
+    connect(job, &ReadPasswordJob::finished, this, [this, server, epoch, requireCurrentCredentials, callback = std::move(callback)](Job *incoming) {
+        const auto deliver = [this, &callback](const QString &password) {
+            if (callback) {
+                callback(password);
+            } else {
+                Q_EMIT appPasswordRetrieved(password);
+            }
+        };
+        if (url() != server || (requireCurrentCredentials && epoch != _nativeCredentialEpoch)) {
+            deliver({});
+            return;
+        }
         auto readJob = dynamic_cast<ReadPasswordJob *>(incoming);
         const auto password = readJob->binaryData();
         // Error or no valid public key error out
@@ -944,7 +1009,7 @@ void Account::retrieveAppPassword()
             qCDebug(lcAccount) << "Found appPassword";
         }
 
-        Q_EMIT appPasswordRetrieved(password);
+        deliver(password);
     });
     job->start();
 }

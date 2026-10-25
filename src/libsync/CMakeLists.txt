@@ -2,6 +2,36 @@
 # SPDX-FileCopyrightText: 2014 ownCloud GmbH
 # SPDX-License-Identifier: GPL-2.0-or-later
 project(libsync)
+set(CLOUDFLARED_HELPER "" CACHE FILEPATH "Verified cloudflared executable to bundle for browser sign-in")
+set(CLOUDFLARED_HELPER_LICENSE "" CACHE FILEPATH "License notice accompanying the bundled cloudflared executable")
+set(CLOUDFLARED_HELPER_SHA256 "" CACHE STRING "Expected SHA-256 of the bundled cloudflared executable")
+if(CLOUDFLARED_HELPER)
+    if(APPLE)
+        message(FATAL_ERROR "Browser helper packaging requires macOS signing integration that preserves its pinned digest")
+    endif()
+    if(NOT EXISTS "${CLOUDFLARED_HELPER_LICENSE}")
+        message(FATAL_ERROR "Set CLOUDFLARED_HELPER_LICENSE to the helper license notice")
+    endif()
+    if(NOT CLOUDFLARED_HELPER_SHA256 MATCHES "^[0-9a-fA-F]+$")
+        message(FATAL_ERROR "Set CLOUDFLARED_HELPER_SHA256 to the independently verified helper digest")
+    endif()
+    string(LENGTH "${CLOUDFLARED_HELPER_SHA256}" CLOUDFLARED_DIGEST_LENGTH)
+    if(NOT CLOUDFLARED_DIGEST_LENGTH EQUAL 64)
+        message(FATAL_ERROR "CLOUDFLARED_HELPER_SHA256 must contain 64 hexadecimal characters")
+    endif()
+    file(SHA256 "${CLOUDFLARED_HELPER}" CLOUDFLARED_ACTUAL_SHA256)
+    string(TOLOWER "${CLOUDFLARED_HELPER_SHA256}" CLOUDFLARED_HELPER_SHA256)
+    if(NOT CLOUDFLARED_ACTUAL_SHA256 STREQUAL CLOUDFLARED_HELPER_SHA256)
+        message(FATAL_ERROR "The Cloudflare Access helper digest does not match")
+    endif()
+    if(WIN32)
+        set(CLOUDFLARED_EXECUTABLE_NAME "nextcloud-cloudflared.exe")
+    else()
+        set(CLOUDFLARED_EXECUTABLE_NAME "nextcloud-cloudflared")
+    endif()
+    install(PROGRAMS "${CLOUDFLARED_HELPER}" DESTINATION "${BIN_INSTALL_DIR}" RENAME "${CLOUDFLARED_EXECUTABLE_NAME}")
+    install(FILES "${CLOUDFLARED_HELPER_LICENSE}" DESTINATION "${BIN_INSTALL_DIR}" RENAME "nextcloud-cloudflared-LICENSE.txt")
+endif()
 find_package(KF6Archive REQUIRED)
 include(DefinePlatformDefaults)
 
@@ -18,6 +48,7 @@ endif()
 if (WIN32)
   list(APPEND OS_SPECIFIC_LINK_LIBRARIES
     Crypt32
+    Advapi32
   )
 endif()
 
@@ -64,6 +95,12 @@ set(libsync_SRCS
     logger.cpp
     accessmanager.h
     accessmanager.cpp
+    cloudflareaccess.h
+    cloudflarebrowserlogin.h
+    cloudflarebrowserlogin.cpp
+    cloudflareaccess.cpp
+    cloudflareaccessreply.h
+    cloudflareaccessreply.cpp
     configfile.h
     configfile.cpp
     abstractnetworkjob.h
@@ -299,7 +336,7 @@ target_compile_features(nextcloudsync
 )
 
 target_compile_definitions(nextcloudsync PRIVATE OPENSSL_SUPPRESS_DEPRECATED)
-target_compile_definitions(nextcloudsync PRIVATE QT_NO_KEYWORDS)
+target_compile_definitions(nextcloudsync PRIVATE QT_NO_KEYWORDS CLOUDFLARED_HELPER_SHA256="${CLOUDFLARED_HELPER_SHA256}")
 
 if (NOT TOKEN_AUTH_ONLY)
     find_package(Qt${QT_MAJOR_VERSION} COMPONENTS REQUIRED Widgets Svg)

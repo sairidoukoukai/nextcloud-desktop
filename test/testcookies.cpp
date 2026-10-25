@@ -13,12 +13,66 @@
 #include "libsync/cookiejar.h"
 
 using namespace OCC;
+using namespace Qt::StringLiterals;
 
 class TestCookies : public QObject
 {
     Q_OBJECT
 
 private Q_SLOTS:
+    void serviceTokensDoNotRetainAccessCookies()
+    {
+        const auto url = QUrl("https://cloud.example/"_L1);
+        auto authorization = QNetworkCookie("CF_Authorization", "reusable-access-cookie");
+        authorization.setDomain("."_L1 + url.host());
+        authorization.setPath("/"_L1);
+        authorization.setSecure(true);
+        const auto expiration = QDateTime::currentDateTimeUtc().addDays(1);
+        authorization.setExpirationDate(QDateTime::fromSecsSinceEpoch(expiration.toSecsSinceEpoch()));
+        auto session = authorization;
+        session.setName("nextcloud-session");
+        session.setValue("nextcloud-cookie");
+
+        CookieJar jar(nullptr, false);
+        QVERIFY(jar.setCookiesFromUrl({authorization, session}, url));
+        QCOMPARE(jar.cookiesForUrl(url), QList<QNetworkCookie>{session});
+        QCOMPARE(jar.allCookies(), QList<QNetworkCookie>{session});
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto path = directory.filePath("cookies.db"_L1);
+        CookieJar legacy;
+        legacy.setAllCookies({authorization, session});
+        QVERIFY(legacy.save(path));
+        CookieJar restored(nullptr, false);
+        QVERIFY(restored.restore(path));
+        QCOMPARE(restored.allCookies(), QList<QNetworkCookie>{session});
+
+        jar.setAllCookies({authorization, session});
+        QCOMPARE(jar.cookiesForUrl(url), QList<QNetworkCookie>{session});
+        QVERIFY(jar.save(path));
+        QVERIFY(legacy.restore(path));
+        QCOMPARE(legacy.allCookies(), QList<QNetworkCookie>{session});
+    }
+
+    void unmanagedAccessCookiesRemainAvailable()
+    {
+        const auto url = QUrl("https://cloud.example/"_L1);
+        auto cookie = QNetworkCookie("CF_Authorization", "legacy-cookie");
+        cookie.setPath("/"_L1);
+        cookie.setSecure(true);
+        cookie.setExpirationDate(QDateTime::currentDateTimeUtc().addDays(1));
+        CookieJar jar;
+        QVERIFY(jar.setCookiesFromUrl({cookie}, url));
+        QCOMPARE(jar.cookiesForUrl(url).size(), 1);
+        jar.setAllowCloudflareAccessCookies(false);
+        QVERIFY(jar.cookiesForUrl(url).isEmpty());
+        QVERIFY(jar.allCookies().isEmpty());
+        jar.setAllowCloudflareAccessCookies(true);
+        QVERIFY(jar.setCookiesFromUrl({cookie}, url));
+        QCOMPARE(jar.cookiesForUrl(url).size(), 1);
+    }
+
     void testCookies()
     {
         QTemporaryDir tmp;

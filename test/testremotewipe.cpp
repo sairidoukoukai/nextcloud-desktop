@@ -13,23 +13,244 @@
 #include "remotewipe.h"
 #include "accountmanager.h"
 
-#include "folderman.h"
 #include "account.h"
 #include "accountstate.h"
+#include "cloudflareaccess.h"
+#include "accessmanager.h"
+#include "cloudflarebrowsertestutils.h"
+#include "cloudflareaccesstestserver.h"
+#include "cloudflarenativecredentialstestutils.h"
+#include "cmd/simplesslerrorhandler.h"
 #include "configfile.h"
+#include "folderman.h"
+#include "httplogger.h"
 #include "logger.h"
 
 #include "testhelper.h"
 
 #include "syncenginetestutils.h"
+#include <QScopeGuard>
 
 using namespace OCC;
+using namespace Qt::StringLiterals;
 
 class TestRemoteWipe: public QObject
 {
     Q_OBJECT
 
 private Q_SLOTS:
+    void cloudflareCredentialsMustBeReadyBeforeCheckingForWipe()
+    {
+        auto directory = QTemporaryDir();
+        QVERIFY(directory.isValid());
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        access.save(true, "https://cloud.example"_L1, "client"_L1, "secret"_L1);
+        CloudflareAccess loading(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion) { });
+        QVERIFY(!loading.ready());
+
+        FakeFolder folder{FileInfo::A12_B12_C12_S12()};
+        const auto account = folder.account();
+        account->setUrl(QUrl("https://cloud.example"_L1));
+        const auto manager = AccountManager::instance();
+        const auto state = manager->addAccount(account);
+        const auto remove = qScopeGuard([&] {
+            manager->removeAccountState(state);
+        });
+        RemoteWipe wipe(account, nullptr, &loading);
+        wipe.startCheckJobWithAppPassword(u"nextcloud-app-password"_s);
+        QVERIFY(!wipe._networkReplyCheck);
+        QVERIFY(wipe._appPassword.isEmpty());
+        QVERIFY(!account->isRemoteWipeRequested_HACK());
+    }
+
+    void accessWipeFailuresPreserveNativeCredentials_data()
+    {
+        QTest::addColumn<QByteArray>("response");
+        QTest::newRow("false") << CloudflareAccessTestServer::response(200, "{\"wipe\":false}");
+        QTest::newRow("missing") << CloudflareAccessTestServer::response(200, "{}");
+        QTest::newRow("string") << CloudflareAccessTestServer::response(200, "{\"wipe\":\"true\"}");
+        QTest::newRow("malformed") << CloudflareAccessTestServer::response(200, "{broken");
+        QTest::newRow("denied") << CloudflareAccessTestServer::response(401, "{\"wipe\":true}");
+        QTest::newRow("redirect") << CloudflareAccessTestServer::response(302, "{\"wipe\":true}", "https://elsewhere.example");
+    }
+
+    void accessWipeFailuresPreserveNativeCredentials()
+    {
+        QFETCH(QByteArray, response);
+        QTemporaryDir directory;
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        CloudflareAccessTestServer server;
+        QVERIFY(server.isListening());
+        server.respond = [response](const QByteArray &) {
+            return response;
+        };
+        CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        access.saveBrowserToken(server.baseUrl(), OCC::Test::browserToken());
+        FakeFolder folder{FileInfo::A12_B12_C12_S12()};
+        const auto account = folder.account();
+        account->setUrl(QUrl(server.baseUrl()));
+        account->setTrustCertificates(true);
+        account->setSslErrorHandler(new SimpleSslErrorHandler);
+        const auto credentials = new CloudflareNativeTestCredentials(new AccessManager(nullptr, &access));
+        account->setCredentials(credentials);
+        const auto manager = AccountManager::instance();
+        const auto state = manager->addAccount(account);
+        const auto remove = qScopeGuard([&] {
+            manager->removeAccountState(state);
+        });
+        RemoteWipe wipe(account, nullptr, &access);
+        QSignalSpy authorized(&wipe, &RemoteWipe::authorized);
+        wipe.startCheckJob("device+password&value"_L1, true);
+        QVERIFY(wipe._networkReplyCheck);
+        QSignalSpy finished(wipe._networkReplyCheck, &QNetworkReply::finished);
+        QTRY_COMPARE(finished.count(), 1);
+        QCOMPARE(authorized.count(), 0);
+        QCOMPARE(credentials->forgotten, 0);
+        QVERIFY(wipe._appPassword.isEmpty());
+        QVERIFY(!wipe._accessSnapshot);
+        QVERIFY(server.requests.first().contains("token=device%2Bpassword%26value"));
+        QVERIFY(server.requests.first().contains(OCC::Test::browserToken()));
+    }
+
+    void nativePasswordCompletionCannotInheritAccessPreservation_data()
+    {
+        QTest::addColumn<bool>("accessFirst");
+        QTest::newRow("legacy-result-first") << false;
+        QTest::newRow("access-result-first") << true;
+    }
+
+    void nativePasswordCompletionCannotInheritAccessPreservation()
+    {
+        QFETCH(bool, accessFirst);
+        QTemporaryDir directory;
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        CloudflareAccessTestServer server;
+        QVERIFY(server.isListening());
+        server.respond = [](const QByteArray &) {
+            return QByteArray{};
+        };
+        CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        access.saveBrowserToken(server.baseUrl(), OCC::Test::browserToken());
+        FakeFolder folder{FileInfo::A12_B12_C12_S12()};
+        const auto account = folder.account();
+        account->setUrl(QUrl(server.baseUrl()));
+        account->setTrustCertificates(true);
+        account->setSslErrorHandler(new SimpleSslErrorHandler);
+        account->setCredentials(new CloudflareNativeTestCredentials(new AccessManager(nullptr, &access)));
+        const auto manager = AccountManager::instance();
+        const auto state = manager->addAccount(account);
+        const auto remove = qScopeGuard([&] {
+            manager->removeAccountState(state);
+        });
+        RemoteWipe::PasswordCompletion pending;
+        RemoteWipe wipe(account, nullptr, &access, [&](RemoteWipe::PasswordCompletion completion) {
+            pending = std::move(completion);
+        });
+        wipe.readAccessPassword();
+        QVERIFY(pending);
+        if (accessFirst) {
+            pending("old-access-password"_L1);
+            QTRY_VERIFY(!server.requests.isEmpty());
+            QVERIFY(wipe._preserveCredentials);
+        }
+        wipe.startCheckJobWithAppPassword("current-native-password"_L1);
+        QVERIFY(!wipe._preserveCredentials);
+        pending("obsolete-access-password"_L1);
+        QCOMPARE(wipe._appPassword, "current-native-password"_L1);
+        QVERIFY(!wipe._preserveCredentials);
+        QVERIFY(!wipe._passwordReadPending);
+        QVERIFY(wipe._networkReplyCheck);
+    }
+
+    void accountDeletionPreservesOnlyPendingWipeAcknowledgement()
+    {
+        QTemporaryDir directory;
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        auto entries = QHash<QString, QByteArray>();
+        const auto store = [&](const QString &key, const std::optional<QByteArray> &value, CloudflareAccess::Completion done) {
+            if (value) {
+                if (value->isEmpty()) {
+                    entries.remove(key);
+                } else {
+                    entries[key] = *value;
+                }
+            }
+            done(entries.value(key), {});
+        };
+        CloudflareAccessTestServer server;
+        QVERIFY(server.isListening());
+        server.respond = [](const QByteArray &) {
+            return CloudflareAccessTestServer::response(200, "{\"wipe\":true}");
+        };
+        FakeFolder folder{FileInfo::A12_B12_C12_S12()};
+        const auto account = folder.account();
+        delete account->_accountAccess;
+        account->_accountAccess = new CloudflareAccess(account.data(), store, std::chrono::seconds(1), "account-one"_L1);
+        account->_accountAccess->saveBrowserToken(server.baseUrl(), OCC::Test::browserToken());
+        CloudflareAccess other(nullptr, store, std::chrono::seconds(1), "account-two"_L1);
+        other.saveBrowserToken(server.baseUrl(), OCC::Test::browserToken(QDateTime::currentSecsSinceEpoch() + 7200, "other-subject"_L1));
+        account->setUrl(QUrl(server.baseUrl()));
+        account->setTrustCertificates(true);
+        account->setSslErrorHandler(new SimpleSslErrorHandler);
+        account->setCredentials(new CloudflareNativeTestCredentials(new AccessManager));
+        const auto manager = AccountManager::instance();
+        const auto state = manager->addAccount(account);
+        RemoteWipe wipe(account);
+        disconnect(&wipe, nullptr, FolderMan::instance(), nullptr);
+        wipe._canWipeLocalFiles = true;
+        QSignalSpy authorized(&wipe, &RemoteWipe::authorized);
+        wipe.startCheckJob("synthetic-device-password"_L1, true);
+        QTRY_COMPARE(authorized.count(), 1);
+        QVERIFY(wipe._accessSnapshot);
+        wipe.slotWipeDone(nullptr, false);
+        QVERIFY(wipe._accessSnapshot);
+        manager->deleteAccount(state);
+        QVERIFY(!account->_accountAccess->enabled());
+        const auto wipeRequests = [&] {
+            auto result = QList<QByteArray>();
+            for (const auto &request : server.requests) {
+                if (request.startsWith("POST /index.php/core/wipe/")) {
+                    result.append(request);
+                }
+            }
+            return result;
+        };
+        QTRY_COMPARE(wipeRequests().size(), 2);
+        QTRY_VERIFY(wipe._appPassword.isEmpty());
+        QVERIFY(!wipe._accessSnapshot);
+        QVERIFY(wipeRequests()[0].startsWith("POST /index.php/core/wipe/check "));
+        QVERIFY(wipeRequests()[1].startsWith("POST /index.php/core/wipe/success "));
+        for (const auto &request : wipeRequests()) {
+            QVERIFY(request.contains(OCC::Test::browserToken()));
+            QVERIFY(request.contains("token=synthetic-device-password"));
+        }
+        QVERIFY(other.ready());
+        QCOMPARE(entries.size(), 1);
+    }
+
     void initTestCase()
     {
         OCC::Logger::instance()->setLogFlush(true);

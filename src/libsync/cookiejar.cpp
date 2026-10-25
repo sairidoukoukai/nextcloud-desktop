@@ -63,8 +63,9 @@ QDataStream &operator>>(QDataStream &stream, QList<QNetworkCookie> &list)
     return stream;
 }
 
-CookieJar::CookieJar(QObject *parent)
+CookieJar::CookieJar(QObject *parent, bool allowCloudflareAccessCookies)
     : QNetworkCookieJar(parent)
+    , _allowCloudflareAccessCookies(allowCloudflareAccessCookies)
 {
 }
 
@@ -72,8 +73,9 @@ CookieJar::~CookieJar() = default;
 
 bool CookieJar::setCookiesFromUrl(const QList<QNetworkCookie> &cookieList, const QUrl &url)
 {
-    if (QNetworkCookieJar::setCookiesFromUrl(cookieList, url)) {
-        Q_EMIT newCookiesForUrl(cookieList, url);
+    const auto accepted = allowedCookies(cookieList);
+    if (QNetworkCookieJar::setCookiesFromUrl(accepted, url)) {
+        Q_EMIT newCookiesForUrl(accepted, url);
         return true;
     }
 
@@ -82,8 +84,13 @@ bool CookieJar::setCookiesFromUrl(const QList<QNetworkCookie> &cookieList, const
 
 QList<QNetworkCookie> CookieJar::cookiesForUrl(const QUrl &url) const
 {
-    QList<QNetworkCookie> cookies = QNetworkCookieJar::cookiesForUrl(url);
-    return cookies;
+    return allowedCookies(QNetworkCookieJar::cookiesForUrl(url));
+}
+
+void CookieJar::setAllowCloudflareAccessCookies(bool allow)
+{
+    _allowCloudflareAccessCookies = allow;
+    setAllCookies(allowedCookies(allCookies()));
 }
 
 void CookieJar::clearSessionCookies()
@@ -106,7 +113,7 @@ bool CookieJar::save(const QString &fileName)
         return false;
     }
     QDataStream stream(&file);
-    stream << removeExpired(allCookies());
+    stream << removeExpired(allowedCookies(allCookies()));
     file.close();
     return true;
 }
@@ -127,9 +134,23 @@ bool CookieJar::restore(const QString &fileName)
     QDataStream stream(&file);
     QList<QNetworkCookie> list;
     stream >> list;
-    setAllCookies(removeExpired(list));
+    setAllCookies(removeExpired(allowedCookies(list)));
     file.close();
     return true;
+}
+
+QList<QNetworkCookie> CookieJar::allowedCookies(const QList<QNetworkCookie> &cookies) const
+{
+    if (_allowCloudflareAccessCookies) {
+        return cookies;
+    }
+    auto accepted = QList<QNetworkCookie>();
+    for (const auto &cookie : cookies) {
+        if (cookie.name() != "CF_Authorization") {
+            accepted.append(cookie);
+        }
+    }
+    return accepted;
 }
 
 QList<QNetworkCookie> CookieJar::removeExpired(const QList<QNetworkCookie> &cookies)

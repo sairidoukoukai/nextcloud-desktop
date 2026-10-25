@@ -4,8 +4,9 @@
  */
 
 #include "pushnotifications.h"
-#include "creds/abstractcredentials.h"
 #include "account.h"
+#include "cloudflareaccess.h"
+#include "creds/abstractcredentials.h"
 
 #include <QJsonArray>
 
@@ -20,9 +21,10 @@ namespace OCC {
 
 Q_LOGGING_CATEGORY(lcPushNotifications, "nextcloud.sync.pushnotifications", QtInfoMsg)
 
-PushNotifications::PushNotifications(Account *account, QObject *parent)
+PushNotifications::PushNotifications(Account *account, QObject *parent, CloudflareAccess *cloudflareAccess)
     : QObject(parent)
     , _account(account)
+    , _cloudflareAccess(cloudflareAccess ? cloudflareAccess : account->cloudflareAccess())
     , _webSocket(new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this))
 {
     connect(_webSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::errorOccurred), this, &PushNotifications::onWebSocketError);
@@ -38,6 +40,11 @@ PushNotifications::PushNotifications(Account *account, QObject *parent)
     connect(&_pingTimedOutTimer, &QTimer::timeout, this, &PushNotifications::onPingTimedOut);
     _pingTimedOutTimer.setSingleShot(true);
     _pingTimedOutTimer.setInterval(PING_INTERVAL);
+    connect(_cloudflareAccess, &CloudflareAccess::configurationChanged, this, [this] {
+        if (_started && (_usesCloudflare || _cloudflareAccess->protects(_account->capabilities().pushNotificationsWebSocketUrl()))) {
+            reconnectToWebSocket();
+        }
+    });
 }
 
 PushNotifications::~PushNotifications()
@@ -47,6 +54,7 @@ PushNotifications::~PushNotifications()
 
 void PushNotifications::setup()
 {
+    _started = true;
     qCInfo(lcPushNotifications) << "Setup push notifications";
     _failedAuthenticationAttemptsCount = 0;
     reconnectToWebSocket();
@@ -173,7 +181,19 @@ void PushNotifications::openWebSocket()
     qCInfo(lcPushNotifications) << "Open connection to websocket on" << webSocketUrl << "for account" << _account->displayName() << _account->url();
     connect(_webSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::errorOccurred), this, &PushNotifications::onWebSocketError);
     connect(_webSocket, &QWebSocket::sslErrors, this, &PushNotifications::onWebSocketSslErrors);
-    _webSocket->open(webSocketUrl);
+    auto request = QNetworkRequest(webSocketUrl);
+    if (!_cloudflareAccess) {
+        closeWebSocket();
+        Q_EMIT connectionLost();
+        return;
+    }
+    _usesCloudflare = _cloudflareAccess->protects(webSocketUrl);
+    if (const auto error = _cloudflareAccess->prepareRequest(request); !error.isEmpty()) {
+        closeWebSocket();
+        Q_EMIT connectionLost();
+        return;
+    }
+    _webSocket->open(request);
 }
 
 void PushNotifications::setReconnectTimerInterval(uint32_t interval)

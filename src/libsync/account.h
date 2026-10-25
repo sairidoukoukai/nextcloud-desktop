@@ -19,18 +19,19 @@
 #include "updatechannel.h"
 
 #include <QByteArray>
-#include <QUrl>
+#include <QHttpMultiPart>
 #include <QNetworkCookie>
 #include <QNetworkProxy>
 #include <QNetworkRequest>
-#include <QSslSocket>
-#include <QSslCertificate>
-#include <QSslConfiguration>
-#include <QSslCipher>
-#include <QSslError>
+#include <QPointer>
 #include <QSharedPointer>
-#include <QHttpMultiPart>
+#include <QSslCertificate>
+#include <QSslCipher>
+#include <QSslConfiguration>
+#include <QSslError>
+#include <QSslSocket>
 #include <QTimer>
+#include <QUrl>
 #include <QUuid>
 
 #ifndef TOKEN_AUTH_ONLY
@@ -38,6 +39,7 @@
 #endif
 
 #include <memory>
+#include <functional>
 
 class QSettings;
 class QNetworkReply;
@@ -50,10 +52,14 @@ class WritePasswordJob;
 class ReadPasswordJob;
 }
 
+class TestRemoteWipe;
+class TestSettingsDialog;
+
 namespace OCC {
 
 class AbstractCredentials;
 class AccessManager;
+class CloudflareAccess;
 class SimpleNetworkJob;
 class PushNotifications;
 class UserStatusConnector;
@@ -160,6 +166,7 @@ public:
 
     /// The internal id of the account.
     [[nodiscard]] QString id() const;
+    [[nodiscard]] CloudflareAccess *cloudflareAccess();
 
     /** Server url of the account */
     void setUrl(const QUrl &url);
@@ -328,12 +335,17 @@ public:
     [[nodiscard]] QSharedPointer<QNetworkAccessManager> sharedNetworkAccessManager() const;
 
     /// Called by network jobs on credential errors, emits invalidCredentials()
-    void handleInvalidCredentials();
+    void handleInvalidCredentials(QNetworkReply *reply = nullptr);
+    void advanceCredentialEpoch();
+    [[nodiscard]] quint64 nativeCredentialEpoch() const
+    {
+        return _nativeCredentialEpoch;
+    }
 
     ClientSideEncryption* e2e();
 
     /// Used in RemoteWipe
-    void retrieveAppPassword();
+    void retrieveAppPassword(bool requireCurrentCredentials = false, std::function<void(QString)> callback = {});
     void writeAppPasswordOnce(const QString &appPassword);
     void deleteAppPassword();
 
@@ -476,6 +488,7 @@ Q_SIGNALS:
 
     /// Triggered by handleInvalidCredentials()
     void invalidCredentials();
+    void cloudflareAccessCheckFailed();
 
     void credentialsFetched(OCC::AbstractCredentials *credentials);
     void credentialsAsked(OCC::AbstractCredentials *credentials);
@@ -499,6 +512,7 @@ Q_SIGNALS:
 
     /// Used in RemoteWipe
     void appPasswordRetrieved(QString);
+    void cloudflareRemoteWipeCheckRequested();
 
     void pushNotificationsReady(const OCC::AccountPtr &account);
     void pushNotificationsDisabled(const OCC::AccountPtr &account);
@@ -554,6 +568,7 @@ private:
 
     QWeakPointer<Account> _sharedThis;
     QString _id;
+    CloudflareAccess *_accountAccess = nullptr;
     QString _davUser;
     QString _davDisplayName;
     QString _displayName;
@@ -583,6 +598,7 @@ private:
     bool _skipE2eeMetadataChecksumValidation = false;
     QScopedPointer<AbstractSslErrorHandler> _sslErrorHandler;
     QSharedPointer<QNetworkAccessManager> _networkAccessManager;
+    quint64 _nativeCredentialEpoch = 0;
     QScopedPointer<AbstractCredentials> _credentials;
     bool _http2Supported = false;
 
@@ -597,6 +613,8 @@ private:
     bool _wroteAppPassword = false;
 
     friend class AccountManager;
+    friend class ::TestRemoteWipe;
+    friend class ::TestSettingsDialog;
 
     // Direct Editing
     QString _lastDirectEditingETag;

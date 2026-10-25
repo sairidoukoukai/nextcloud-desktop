@@ -4,12 +4,13 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include "common/asserts.h"
-#include "networkjobs.h"
-#include "account.h"
-#include "owncloudpropagator.h"
-#include "httplogger.h"
 #include "accessmanager.h"
+#include "account.h"
+#include "cloudflareaccess.h"
+#include "common/asserts.h"
+#include "httplogger.h"
+#include "networkjobs.h"
+#include "owncloudpropagator.h"
 
 #include "creds/abstractcredentials.h"
 
@@ -308,7 +309,7 @@ void AbstractNetworkJob::slotFinished()
 
     AbstractCredentials *creds = _account->credentials();
     if (!creds->stillValid(_reply) && !_ignoreCredentialFailure) {
-        _account->handleInvalidCredentials();
+        _account->handleInvalidCredentials(_reply);
     }
 
     bool discard = finished();
@@ -358,6 +359,11 @@ QString AbstractNetworkJob::errorString() const
         return *hstsError;
     }
 
+    const auto status = reply()->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if ((status == 401 || status == 403) && CloudflareAccess::hasCredentials(reply()->request())) {
+        return networkReplyErrorString(*reply()) + u' '
+            + tr("Cloudflare Access authentication may have expired or been denied. Renew the session or check the server's Access policy.");
+    }
     return networkReplyErrorString(*reply());
 }
 

@@ -7,6 +7,7 @@
 
 #include <QWebSocket>
 #include <QTimer>
+#include <QPointer>
 
 #include "capabilities.h"
 
@@ -14,13 +15,14 @@ namespace OCC {
 
 class Account;
 class AbstractCredentials;
+class CloudflareAccess;
 
 class OWNCLOUDSYNC_EXPORT PushNotifications : public QObject
 {
     Q_OBJECT
 
 public:
-    explicit PushNotifications(Account *account, QObject *parent = nullptr);
+    explicit PushNotifications(Account *account, QObject *parent = nullptr, CloudflareAccess *cloudflareAccess = nullptr);
 
     ~PushNotifications() override;
 
@@ -126,6 +128,9 @@ private:
     void emitActivitiesChanged();
 
     Account *_account = nullptr;
+    QPointer<CloudflareAccess> _cloudflareAccess;
+    bool _started = false;
+    bool _usesCloudflare = false;
     QWebSocket *_webSocket;
     uint8_t _failedAuthenticationAttemptsCount = 0;
     QTimer *_reconnectTimer = nullptr;

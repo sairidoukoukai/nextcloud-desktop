@@ -6,17 +6,19 @@
 
 #include "accountstate.h"
 
-#include "accountmanager.h"
-#include "remotewipe.h"
+#include "accessmanager.h"
 #include "account.h"
+#include "accountmanager.h"
+#include "cloudflareaccess.h"
+#include "configfile.h"
 #include "creds/abstractcredentials.h"
 #include "creds/httpcredentials.h"
 #include "logger.h"
-#include "configfile.h"
+#include "networkjobs.h"
 #include "ocsnavigationappsjob.h"
 #include "ocsuserstatusconnector.h"
 #include "pushnotifications.h"
-#include "networkjobs.h"
+#include "remotewipe.h"
 #include "settings/migration.h"
 
 #include <QSettings>
@@ -52,6 +54,13 @@ AccountState::AccountState(const AccountPtr &account)
 
     connect(account.data(), &Account::invalidCredentials,
         this, &AccountState::slotHandleRemoteWipeCheck);
+    connect(account.data(), &Account::cloudflareAccessCheckFailed, this, [this] {
+        if (!isSignedOut()) {
+            _connectionErrors = {
+                tr("Cloudflare Access could not be verified. Sign in again under Settings → Advanced → Browser sign-in, or check server availability.")};
+            setState(NetworkError);
+        }
+    });
     connect(account.data(), &Account::credentialsFetched,
         this, &AccountState::slotCredentialsFetched);
     connect(account.data(), &Account::credentialsAsked,
@@ -89,6 +98,20 @@ AccountState::AccountState(const AccountPtr &account)
     _checkServerAvailibilityTimer.start();
 
     QTimer::singleShot(0, this, &AccountState::slotCheckConnection);
+    const auto accessManager = qobject_cast<AccessManager *>(account->networkAccessManager());
+    const auto access = accessManager ? accessManager->cloudflareAccess() : nullptr;
+    connect(account->cloudflareAccess(), &CloudflareAccess::configurationChanged, this, [this] {
+        if (!isSignedOut()) {
+            checkConnectivity();
+        }
+    });
+    if (access && access != account->cloudflareAccess()) {
+        connect(access, &CloudflareAccess::configurationChanged, this, [this] {
+            if (!isSignedOut()) {
+                checkConnectivity();
+            }
+        });
+    }
 }
 
 AccountState::~AccountState() = default;
@@ -194,6 +217,8 @@ bool AccountState::isSignedOut() const
 
 void AccountState::signOutByUi()
 {
+    account()->advanceCredentialEpoch();
+    account()->cloudflareAccess()->clear();
     account()->credentials()->forgetSensitiveData();
     account()->clearCookieJar();
     setState(SignedOut);
@@ -287,6 +312,12 @@ void AccountState::systemOnlineConfigurationChanged()
 void AccountState::checkConnectivity()
 {
     qCInfo(lcAccountState()) << "check connectivity";
+
+    const auto manager = qobject_cast<AccessManager *>(account()->networkAccessManager());
+    const auto access = manager ? manager->cloudflareAccess() : nullptr;
+    if (access && access->protects(account()->url()) && access->busy()) {
+        return;
+    }
 
     if (isSignedOut() || _waitingForNewCredentials) {
         return;
