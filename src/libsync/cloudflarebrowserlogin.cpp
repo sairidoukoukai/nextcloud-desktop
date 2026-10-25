@@ -107,7 +107,7 @@ bool CloudflareBrowserLogin::makePrivate(const QString &path)
     if (!ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER *>(storage.data())->User.Sid, &sid)) {
         return false;
     }
-    const auto dacl = "D:P(A;OICI;FA;;;"_L1 + QString::fromWCharArray(sid) + ")(A;OICI;FA;;;SY)"_L1;
+    const auto dacl = QString("D:P(A;OICI;FA;;;"_L1 + QString::fromWCharArray(sid) + ")(A;OICI;FA;;;SY)"_L1);
     LocalFree(sid);
     auto descriptor = PSECURITY_DESCRIPTOR{};
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(reinterpret_cast<LPCWSTR>(dacl.utf16()), SDDL_REVISION_1, &descriptor, nullptr)) {
