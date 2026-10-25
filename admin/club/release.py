@@ -11,20 +11,21 @@ import os
 from pathlib import Path
 import re
 
-UPSTREAM_BASE = "ce977e31810bc9f2cdffc4828cc0a14bd0792110"
+UPSTREAM_BASE = "76ef152f8c98009c910f124af1da20876e3915e9"
 BLUEPRINTS_COMMIT = "d9829275a569d3cf83e42ad9c50140074d01dd9f"
 RECIPE_PATCH = Path(__file__).resolve().parent / "patches/0001-nextcloud-blueprint-packaging.patch"
 EXPECTED_TESTS = {
     "CloudflareAccessTest", "CookiesTest", "AccountWizardControllerTest",
     "AccountWizardWindowQmlTest", "SettingsDialogTest", "PushNotificationsTest",
     "RemoteWipeTest", "AccountStateTest", "ConnectionValidatorTest",
+    "WindowCloseQmlTest", "SyncEngineTest", "SyncCfApiTest", "UnifiedSharingTest",
 }
 
 
 def validate_tests(report):
     names = [test["name"] for test in report.get("tests", [])]
     if len(names) != len(EXPECTED_TESTS) or set(names) != EXPECTED_TESTS:
-        raise ValueError("CTest must register exactly the nine required client suites.")
+        raise ValueError("CTest must register exactly the thirteen required client suites.")
 
 
 def validate(tag, ref, head, main, existing_refs=()):

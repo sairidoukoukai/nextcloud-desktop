@@ -41,7 +41,8 @@
 using namespace OCC;
 using namespace Qt::StringLiterals;
 
-namespace OCC {
+namespace OCC
+{
 
 class AccountWizardControllerTestAccess
 {
@@ -61,6 +62,12 @@ public:
         controller._localNetworkPermissionCheck = [denied](const QUrl &, QObject *, std::function<void(bool)> callback) {
             callback(denied);
         };
+    }
+
+    static void findServerBehindRedirect(AccountWizardController &controller, const AccountPtr &account)
+    {
+        controller._account = account;
+        controller.slotFindServerBehindRedirect();
     }
 
     static void setAccountUrl(AccountWizardController &controller, const QUrl &url)
@@ -212,11 +219,16 @@ private Q_SLOTS:
     {
         QTest::addColumn<bool>("poll");
         QTest::addColumn<QString>("outcome");
-        QTest::newRow("success") << false << u"success"_s;
+        QTest::addColumn<int>("requestTimeoutMilliseconds");
+        QTest::addColumn<int>("expectedRequestTimeoutMilliseconds");
+        QTest::newRow("success") << false << u"success"_s << 1000 << 1000;
+        QTest::newRow("success-short-timeout") << false << u"success"_s << 5000 << 5000;
+        QTest::newRow("success-capped-timeout") << false << u"success"_s << 300000 << 30000;
+        QTest::newRow("success-default-timeout") << false << u"success"_s << 0 << 30000;
         for (const auto poll : {false, true}) {
             for (const auto &outcome : {u"malformed"_s, u"denied"_s, u"server-error"_s, u"timeout"_s, u"cancel"_s}) {
                 const auto name = QString((poll ? u"poll-"_s : u"initiate-"_s) + outcome);
-                QTest::newRow(qPrintable(name)) << poll << outcome;
+                QTest::newRow(qPrintable(name)) << poll << outcome << 1000 << 1000;
             }
         }
     }
@@ -225,6 +237,8 @@ private Q_SLOTS:
     {
         QFETCH(bool, poll);
         QFETCH(QString, outcome);
+        QFETCH(int, requestTimeoutMilliseconds);
+        QFETCH(int, expectedRequestTimeoutMilliseconds);
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const auto previous = ConfigFile().configPath();
@@ -234,8 +248,7 @@ private Q_SLOTS:
             AbstractNetworkJob::httpTimeout = previousTimeout;
         });
         ConfigFile::setConfDir(directory.path());
-        constexpr auto requestTimeoutSeconds = 1;
-        AbstractNetworkJob::httpTimeout = requestTimeoutSeconds;
+        AbstractNetworkJob::httpTimeout = requestTimeoutMilliseconds;
         CloudflareAccess access(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
             done({}, {});
         });
@@ -274,7 +287,8 @@ private Q_SLOTS:
             reply->ignoreSslErrors();
         });
         QSignalSpy finished(manager, &QNetworkAccessManager::finished);
-        connect(manager, &QNetworkAccessManager::finished, &access, [](QNetworkReply *reply) {
+        connect(manager, &QNetworkAccessManager::finished, &access, [expectedRequestTimeoutMilliseconds](QNetworkReply *reply) {
+            QCOMPARE(reply->request().transferTimeout(), expectedRequestTimeoutMilliseconds);
             QVERIFY(reply->request().attribute(HttpLogger::SensitiveBodyAttribute).toBool());
             QVERIFY(!HttpLogger::bodyLoggingAllowed(reply->request()));
         });
@@ -312,6 +326,49 @@ private Q_SLOTS:
         }
         QVERIFY(access.enabled());
         QCOMPARE(access.clientSecret(), u"secret"_s);
+    }
+
+    void authenticationProbeTimeouts_data()
+    {
+        QTest::addColumn<bool>("redirectProbe");
+        QTest::addColumn<int>("configuredTimeoutMilliseconds");
+        QTest::addColumn<int>("expectedTimeoutMilliseconds");
+        QTest::newRow("auth-detection") << false << 300000 << 30000;
+        QTest::newRow("redirect") << true << 300000 << 2000;
+        QTest::newRow("short-redirect") << true << 500 << 500;
+    }
+
+    void authenticationProbeTimeouts()
+    {
+        QFETCH(bool, redirectProbe);
+        QFETCH(int, configuredTimeoutMilliseconds);
+        QFETCH(int, expectedTimeoutMilliseconds);
+        const auto previousTimeout = AbstractNetworkJob::httpTimeout;
+        const auto restore = qScopeGuard([&] {
+            AbstractNetworkJob::httpTimeout = previousTimeout;
+        });
+        AbstractNetworkJob::httpTimeout = configuredTimeoutMilliseconds;
+        FakeFolder folder{{}, {}, {}, false};
+        QList<QNetworkRequest> requests;
+        folder.setServerOverride([&](QNetworkAccessManager::Operation operation, const QNetworkRequest &request, QIODevice *) -> QNetworkReply * {
+            requests.append(request);
+            return new FakeErrorReply(operation, request, folder.account()->networkAccessManager(), 404);
+        });
+        if (redirectProbe) {
+            AccountWizardController controller;
+            AccountWizardControllerTestAccess::findServerBehindRedirect(controller, folder.account());
+            QVERIFY(!requests.isEmpty());
+            QCOMPARE(requests.first().transferTimeout(), expectedTimeoutMilliseconds);
+        } else {
+            const auto job = new DetermineAuthTypeJob(folder.account());
+            QSignalSpy determined(job, &DetermineAuthTypeJob::authType);
+            job->start();
+            QTRY_COMPARE(determined.count(), 1);
+            QCOMPARE(requests.size(), 2);
+            for (const auto &request : requests) {
+                QCOMPARE(request.transferTimeout(), expectedTimeoutMilliseconds);
+            }
+        }
     }
 
     void cloudflareDialogUsesProductionController()
@@ -679,14 +736,10 @@ private Q_SLOTS:
 
     void defaultsToHttpsWhenSchemeIsMissing()
     {
-        QCOMPARE(AccountWizardController::normalizeServerUrlInput(QString()),
-                 QString());
-        QCOMPARE(AccountWizardController::normalizeServerUrlInput(QStringLiteral("cloud.example")),
-                 QStringLiteral("https://cloud.example"));
-        QCOMPARE(AccountWizardController::normalizeServerUrlInput(QStringLiteral("cloud.example:8080")),
-                 QStringLiteral("https://cloud.example:8080"));
-        QCOMPARE(AccountWizardController::normalizeServerUrlInput(QStringLiteral("http://cloud.example")),
-                 QStringLiteral("http://cloud.example"));
+        QCOMPARE(AccountWizardController::normalizeServerUrlInput(QString()), QString());
+        QCOMPARE(AccountWizardController::normalizeServerUrlInput(QStringLiteral("cloud.example")), QStringLiteral("https://cloud.example"));
+        QCOMPARE(AccountWizardController::normalizeServerUrlInput(QStringLiteral("cloud.example:8080")), QStringLiteral("https://cloud.example:8080"));
+        QCOMPARE(AccountWizardController::normalizeServerUrlInput(QStringLiteral("http://cloud.example")), QStringLiteral("http://cloud.example"));
     }
 
     void localNetworkPermissionCheckIgnoresInvalidUrls()
@@ -726,10 +779,7 @@ private Q_SLOTS:
         AccountWizardControllerTestAccess::setAccountUrl(controller, serverUrl);
         QSignalSpy recoverySpy(&controller, &AccountWizardController::secureConnectionFailed);
 
-        QVERIFY(QMetaObject::invokeMethod(&controller,
-                                          "slotNoServerFoundTimeout",
-                                          Qt::DirectConnection,
-                                          Q_ARG(QUrl, serverUrl)));
+        QVERIFY(QMetaObject::invokeMethod(&controller, "slotNoServerFoundTimeout", Qt::DirectConnection, Q_ARG(QUrl, serverUrl)));
 
         QCOMPARE(recoverySpy.count(), 0);
         QVERIFY(!controller.errorText().isEmpty());
@@ -985,11 +1035,11 @@ private Q_SLOTS:
             theme->setForceOverrideServerUrl(previousForceOverrideServerUrl);
         });
 
-        theme->setOverrideServerUrl(QStringLiteral(
-            "["
-            R"({"name": "Primary", "url": "https://primary.example"},)"
-            R"({"name": "Secondary", "url": "https://secondary.example"})"
-            "]"));
+        theme->setOverrideServerUrl(
+            QStringLiteral("["
+                           R"({"name": "Primary", "url": "https://primary.example"},)"
+                           R"({"name": "Secondary", "url": "https://secondary.example"})"
+                           "]"));
         theme->setForceOverrideServerUrl(true);
 
         AccountWizardController controller;
@@ -1014,19 +1064,13 @@ private Q_SLOTS:
         const auto previousOverrideServerUrl = theme->overrideServerUrl();
         const auto previousForceOverrideServerUrl = theme->forceOverrideServerUrl();
         const auto previousStartLoginFlowAutomatically = theme->startLoginFlowAutomatically();
-        const auto restoreConfiguration = qScopeGuard([
-            &cfg,
-            theme,
-            previousConfiguredOverrideServerUrl,
-            previousOverrideServerUrl,
-            previousForceOverrideServerUrl,
-            previousStartLoginFlowAutomatically
-        ] {
-            cfg.setOverrideServerUrl(previousConfiguredOverrideServerUrl);
-            theme->setOverrideServerUrl(previousOverrideServerUrl);
-            theme->setForceOverrideServerUrl(previousForceOverrideServerUrl);
-            theme->setStartLoginFlowAutomatically(previousStartLoginFlowAutomatically);
-        });
+        const auto restoreConfiguration = qScopeGuard(
+            [&cfg, theme, previousConfiguredOverrideServerUrl, previousOverrideServerUrl, previousForceOverrideServerUrl, previousStartLoginFlowAutomatically] {
+                cfg.setOverrideServerUrl(previousConfiguredOverrideServerUrl);
+                theme->setOverrideServerUrl(previousOverrideServerUrl);
+                theme->setForceOverrideServerUrl(previousForceOverrideServerUrl);
+                theme->setStartLoginFlowAutomatically(previousStartLoginFlowAutomatically);
+            });
 
         cfg.setOverrideServerUrl(QStringLiteral("https://cloud.example"));
         theme->setOverrideServerUrl({});

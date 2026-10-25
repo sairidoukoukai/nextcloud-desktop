@@ -144,6 +144,19 @@ add_test(NAME AssistantQmlTest
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 set_tests_properties(AssistantQmlTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+add_executable(WindowCloseQmlTest
+    qml/windowclose/windowcloseqmltestrunner.cpp
+)
+target_link_libraries(WindowCloseQmlTest PRIVATE nextcloudCore Qt::QuickTest)
+set_target_properties(WindowCloseQmlTest PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${BIN_OUTPUT_DIRECTORY}
+    FOLDER Tests
+)
+add_test(NAME WindowCloseQmlTest
+    COMMAND WindowCloseQmlTest -input "${CMAKE_CURRENT_SOURCE_DIR}/qml/windowclose/testwindowclose.qml"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+set_tests_properties(WindowCloseQmlTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 nextcloud_add_test(UnifiedSearchPeopleModel)
 target_link_libraries(UnifiedSearchListmodelTest PRIVATE nextcloudGuiSearch)
 target_link_libraries(UnifiedSearchPeopleModelTest PRIVATE nextcloudGuiSearch)
@@ -241,6 +254,7 @@ if (WIN32)
     )
 
     nextcloud_add_test(SyncCfApi)
+    target_link_libraries(SyncCfApiTest PRIVATE cldapi)
 	nextcloud_add_test(CfApiShellExtensionsIPC)
     target_sources(CfApiShellExtensionsIPCTest PRIVATE "${CMAKE_SOURCE_DIR}/src/libsync/vfs/cfapi/shellext/thumbnailprovideripc.cpp" "${CMAKE_SOURCE_DIR}/src/libsync/vfs/cfapi/shellext/customstateprovideripc.cpp" "${CMAKE_SOURCE_DIR}/src/libsync/vfs/cfapi/shellext/ipccommon.cpp")
 elseif(LINUX) # elseif(LINUX OR APPLE)

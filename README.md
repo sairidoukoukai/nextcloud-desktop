@@ -5,7 +5,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 -->
 # Nextcloud Desktop with Cloudflare Access
 
-An unofficial fork maintained by 再履バス同好会 (Sairibus), based on Nextcloud Desktop 35.0.0. It adds Cloudflare Access Service Token settings to the classic desktop client and retains Nextcloud's browser login and per-device app password.
+An unofficial fork maintained by 再履バス同好会 (Sairibus), based on Nextcloud Desktop 35.0.0 with the subsequent `stable-35.0` fixes through [`76ef152`](https://github.com/nextcloud/desktop/commit/76ef152f8c98009c910f124af1da20876e3915e9). It adds Cloudflare Access Service Token settings to the classic desktop client and retains Nextcloud's browser login and per-device app password.
 
 [Download releases](https://github.com/sairidoukoukai/nextcloud-desktop/releases) · [Upstream project](https://github.com/nextcloud/desktop)
 
@@ -29,7 +29,7 @@ Retire a device by revoking both its Cloudflare Service Token and its Nextcloud 
 
 ## Build and release
 
-The [Windows build script](admin/club/build-windows.ps1) uses pinned Craft, CraftMaster and blueprint commits from the [build configuration](admin/club/craftmaster.ini). It builds the client, runs nine focused test suites, packages an installer, and checks a silent installation in the disposable runner.
+The [Windows build script](admin/club/build-windows.ps1) uses pinned Craft, CraftMaster and blueprint commits from the [build configuration](admin/club/craftmaster.ini). It builds the client, runs thirteen focused test suites, packages an installer, and checks a silent installation in the disposable runner.
 
 A [small patch](admin/club/patches/0001-nextcloud-blueprint-packaging.patch) repairs the pinned recipe's missing Python import and Start Menu launcher. The build checks the recipe revision and clean tree before applying it. `build-info.json` records the patch checksum.
 
@@ -39,7 +39,7 @@ The **Sairibus Windows release** workflow runs manually from `main`. It rejects 
 
 Release automation uses standard GitHub-hosted runners. No signing credentials or server credentials are required. Review changes through pull requests before running a release.
 
-For local development, follow the [upstream development documentation](doc). The focused test targets are `CloudflareAccessTest`, `CookiesTest`, `AccountWizardControllerTest`, `SettingsDialogTest`, `PushNotificationsTest`, `RemoteWipeTest`, `AccountStateTest` and `ConnectionValidatorTest`; CTest also runs `AccountWizardWindowQmlTest`.
+For local development, follow the [upstream development documentation](doc). The focused test targets are `CloudflareAccessTest`, `CookiesTest`, `AccountWizardControllerTest`, `SettingsDialogTest`, `PushNotificationsTest`, `RemoteWipeTest`, `AccountStateTest`, `ConnectionValidatorTest`, `SyncEngineTest`, `SyncCfApiTest`, `UnifiedSharingTest`, and `WindowCloseQmlTest`; CTest also runs `AccountWizardWindowQmlTest`. `SyncCfApiTest` runs on Windows.
 
 ## Provenance and license
 
