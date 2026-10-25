@@ -579,7 +579,7 @@ void SettingsDialog::customizeStyle()
 
                                  /* Panels */
                                  "#generalGroupBox, #fileProviderGroupBox, #notificationsGroupBox, #advancedGroupBox, #syncBehaviorGroupBox,"
-                                 "#advancedActionsGroupBox, #aboutAndUpdatesGroupBox, #updatesGroupBox {"
+                                 "#advancedActionsGroupBox, #aboutAndUpdatesGroupBox, #updatesGroupBox, #cloudflareAccessGroupBox {"
                                  " background: %2;"
                                  " border: none;"
                                  " border-radius: 12px;"
@@ -596,7 +596,7 @@ void SettingsDialog::customizeStyle()
                                  " }"
                                  "#generalGroupBox QLabel, #fileProviderGroupBox QLabel, #notificationsGroupBox QLabel, #advancedGroupBox QLabel,"
                                  "#syncBehaviorGroupBox QLabel, #advancedActionsGroupBox QLabel,"
-                                 "#aboutAndUpdatesGroupBox QLabel, #updatesGroupBox QLabel {"
+                                 "#aboutAndUpdatesGroupBox QLabel, #updatesGroupBox QLabel, #cloudflareAccessGroupBox QLabel {"
                                  " margin: 0px;"
                                  " padding: 0px;"
                                  " }"

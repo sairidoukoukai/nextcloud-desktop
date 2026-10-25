@@ -36,6 +36,77 @@ Item {
         name: "AccountWizardWindow"
         when: windowShown
 
+        function test_cloudflareDialogDraftAndCancel() {
+            const window = createWizard(AccountWizardController.ServerStep)
+            const button = findChild(window, "cloudflareAccessButton")
+            verify(button)
+            compare(button.enabled, false)
+            window.controller.serverUrl = "https://cloud.example"
+            compare(button.enabled, true)
+            mouseClick(button)
+            const dialog = findChild(window, "cloudflareAccessDialog")
+            verify(dialog)
+            tryCompare(dialog, "visible", true)
+            const enabled = findChild(dialog, "cloudflareAccessEnabled")
+            const secret = findChild(dialog, "cloudflareAccessClientSecret")
+            compare(findChild(dialog, "cloudflareAccessServerUrl"), null)
+            const server = findChild(dialog, "cloudflareAccessServer")
+            const apply = findChild(dialog, "cloudflareAccessApply")
+            verify(enabled && secret && server && apply)
+            compare(server.text, window.controller.serverUrl)
+            compare(secret.echoMode, TextInput.Password)
+            const savedEnabled = enabled.checked
+            mouseClick(enabled)
+            compare(secret.enabled, enabled.checked)
+            secret.text = "unsaved-draft"
+            dialog.close()
+            tryCompare(dialog, "visible", false)
+            compare(secret.text, "")
+            mouseClick(button)
+            tryCompare(dialog, "visible", true)
+            compare(enabled.checked, savedEnabled)
+            compare(server.text, window.controller.serverUrl)
+            compare(secret.text, "")
+            dialog.close()
+            window.controller.serverUrl = "https://other.example"
+            mouseClick(button)
+            tryCompare(dialog, "visible", true)
+            compare(server.text, "https://other.example")
+            compare(secret.text, "")
+            compare(window.controller.cloudflareAccess.enabled, false)
+            dialog.close()
+        }
+
+        function test_cloudflareDialogApplyAndValidation() {
+            const window = createWizard(AccountWizardController.ServerStep)
+            window.controller.serverUrl = "https://cloud.example"
+            mouseClick(findChild(window, "cloudflareAccessButton"))
+            const dialog = findChild(window, "cloudflareAccessDialog")
+            tryCompare(dialog, "visible", true)
+            mouseClick(findChild(dialog, "cloudflareAccessEnabled"))
+            const apply = findChild(dialog, "cloudflareAccessApply")
+            mouseClick(apply)
+            compare(dialog.visible, true)
+            verify(findChild(dialog, "cloudflareAccessError").text.length > 0)
+            findChild(dialog, "cloudflareAccessClientId").text = "client"
+            findChild(dialog, "cloudflareAccessClientSecret").text = "secret"
+            mouseClick(apply)
+            tryCompare(dialog, "visible", false)
+            compare(window.controller.cloudflareAccess.enabled, true)
+            compare(window.controller.cloudflareAccess.serverUrl, window.controller.serverUrl)
+            compare(window.controller.cloudflareAccess.clientSecret, "secret")
+            mouseClick(findChild(window, "cloudflareAccessButton"))
+            tryCompare(dialog, "visible", true)
+            compare(findChild(dialog, "cloudflareAccessClientSecret").text, "secret")
+            window.controller.serverUrl = "https://other.example"
+            compare(findChild(dialog, "cloudflareAccessServer").text, window.controller.serverUrl)
+            compare(findChild(dialog, "cloudflareAccessEnabled").checked, false)
+            compare(findChild(dialog, "cloudflareAccessClientSecret").text, "")
+            compare(apply.enabled, false)
+            compare(window.controller.cloudflareAccess.serverUrl, "https://cloud.example")
+            dialog.close()
+        }
+
         function createWizard(step) {
             const controller = createTemporaryObject(controllerComponent, testRoot, { currentStep: step })
             verify(controller)

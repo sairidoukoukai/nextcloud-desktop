@@ -107,6 +107,17 @@ WizardStyledWindow {
         controller: root.controller
     }
 
+    CloudflareAccessDialog {
+        id: cloudflareAccessDialog
+        objectName: "cloudflareAccessDialog"
+        x: Math.round((root.width - width) / 2)
+        y: Math.round((root.height - height) / 2)
+        controller: root.controller.cloudflareAccess
+        serverUrl: root.controller.cloudflareServerUrl
+        onOpened: root.height = Math.max(root.height, implicitHeight + Style.wizardWindowMargin * 2)
+        onClosed: root.height = root.defaultHeightForCurrentStep()
+    }
+
     Dialog {
         id: secureConnectionFailureDialog
 
@@ -324,6 +335,18 @@ WizardStyledWindow {
                     hoverEnabled: enabled
                     cursorShape: Qt.PointingHandCursor
                 }
+            },
+
+            Button {
+                objectName: "cloudflareAccessButton"
+                visible: root.controller && root.controller.currentStep === AccountWizardController.ServerStep
+                enabled: root.controller && !root.controller.busy && root.controller.cloudflareServerUrl.length > 0
+                flat: true
+                text: qsTr("Cloudflare Access…")
+                Layout.fillWidth: true
+                Layout.preferredWidth: 1
+                Layout.preferredHeight: Style.wizardFooterButtonHeight
+                onClicked: cloudflareAccessDialog.open()
             },
 
             Item {
