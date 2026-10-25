@@ -1,0 +1,215 @@
+--- a/token/token.go
++++ b/token/token.go
+@@ -1,6 +1,7 @@
+ package token
+ 
+ import (
++	"context"
+ 	"crypto/rand"
+ 	"encoding/hex"
+ 	"encoding/json"
+@@ -477,31 +478,38 @@
+ // header and returns the raw JWT string from the response. No redirects are
+ // followed.
+ func fetchMetadataJWT(reqURL string) (string, error) {
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
+ 	client := &http.Client{
+-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+-			return http.ErrUseLastResponse
+-		},
+-		Timeout: time.Second * 7,
+-	}
+-
+-	req, err := http.NewRequest("HEAD", reqURL, nil)
+-	if err != nil {
+-		return "", errors.Wrap(err, "failed to create app info request")
+-	}
+-	req.Header.Set(accessMetadataReqHeader, accessMetadataReqValue)
+-	req.Header.Set(userAgentHeader, userAgent)
+-
+-	resp, err := client.Do(req) // nolint: gosec
+-	if err != nil {
+-		return "", errors.Wrap(err, "failed to get app info")
+-	}
+-	_ = resp.Body.Close()
+-
+-	rawJWT := resp.Header.Get(accessMetadataRespHeader)
+-	if rawJWT == "" {
+-		return "", fmt.Errorf("failed to find Access application at %s", reqURL)
+-	}
+-	return rawJWT, nil
++		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
++		Timeout:       7 * time.Second,
++	}
++	return fetchMetadataJWTContext(ctx, client, reqURL, time.Second)
++}
++
++func fetchMetadataJWTContext(ctx context.Context, client *http.Client, reqURL string, retryDelay time.Duration) (string, error) {
++	for {
++		req, err := http.NewRequestWithContext(ctx, "HEAD", reqURL, nil)
++		if err != nil {
++			return "", errors.Wrap(err, "failed to create app info request")
++		}
++		req.Header.Set(accessMetadataReqHeader, accessMetadataReqValue)
++		req.Header.Set(userAgentHeader, userAgent)
++		resp, err := client.Do(req)
++		if err == nil {
++			_ = resp.Body.Close()
++			if resp.StatusCode < 500 {
++				rawJWT := resp.Header.Get(accessMetadataRespHeader)
++				if rawJWT == "" {
++					return "", errors.New("failed to find Access application")
++				}
++				return rawJWT, nil
++			}
++		}
++		if err := waitForLoginRetry(ctx, retryDelay); err != nil {
++			return "", errors.Wrap(err, "failed to get app info")
++		}
++	}
+ }
+ 
+ func validateMetadataIssuedAt(iat int64, now time.Time) error {
+--- a/token/transfer.go
++++ b/token/transfer.go
+@@ -1,7 +1,7 @@
+ package token
+ 
+ import (
+-	"bytes"
++	"context"
+ 	"encoding/base64"
+ 	"fmt"
+ 	"io"
+@@ -116,23 +116,45 @@
+ 
+ // transferRequest downloads the requested resource from the request URL
+ func transferRequest(requestURL string, log *zerolog.Logger) ([]byte, string, error) {
+-	client := &http.Client{Timeout: clientTimeout}
+-	const pollAttempts = 10
+-	// we do "long polling" on the endpoint to get the resource.
+-	for i := 0; i < pollAttempts; i++ {
+-		buf, key, err := poll(client, requestURL, log)
+-		if err != nil {
+-			return nil, "", err
+-		} else if len(buf) > 0 {
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
++	defer cancel()
++	return transferRequestContext(ctx, &http.Client{Timeout: clientTimeout}, requestURL, log, time.Second)
++}
++
++const maximumTransferResponse = 64 * 1024
++
++var errTransferTooLarge = errors.New("transfer response exceeds size limit")
++
++// Keep the same transfer URL and encryption key while waiting for browser approval.
++func transferRequestContext(ctx context.Context, client *http.Client, requestURL string, log *zerolog.Logger, retryDelay time.Duration) ([]byte, string, error) {
++	for {
++		buf, key, err := poll(ctx, client, requestURL, log)
++		if err == nil && len(buf) > 0 {
+ 			return buf, key, nil
+ 		}
++		if errors.Is(err, errTransferTooLarge) {
++			return nil, "", err
++		}
++		if err := waitForLoginRetry(ctx, retryDelay); err != nil {
++			return nil, "", err
++		}
+ 	}
+-	return nil, "", errors.New("Failed to fetch resource")
++}
++
++func waitForLoginRetry(ctx context.Context, delay time.Duration) error {
++	timer := time.NewTimer(delay)
++	defer timer.Stop()
++	select {
++	case <-ctx.Done():
++		return ctx.Err()
++	case <-timer.C:
++		return nil
++	}
+ }
+ 
+ // poll the endpoint for the request resource, waiting for the user interaction
+-func poll(client *http.Client, requestURL string, log *zerolog.Logger) ([]byte, string, error) {
+-	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
++func poll(ctx context.Context, client *http.Client, requestURL string, log *zerolog.Logger) ([]byte, string, error) {
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+ 	if err != nil {
+ 		return nil, "", err
+ 	}
+@@ -146,21 +168,19 @@
+ 	// ignore everything other than server errors as the resource
+ 	// may not exist until the user does the interaction
+ 	if resp.StatusCode >= 500 {
+-		buf := new(bytes.Buffer)
+-		if _, err := io.Copy(buf, resp.Body); err != nil {
+-			return nil, "", err
+-		}
+-
+-		return nil, "", fmt.Errorf("error on request %d: %s", resp.StatusCode, buf.String())
++		return nil, "", fmt.Errorf("transfer service unavailable (HTTP %d)", resp.StatusCode)
+ 	}
+ 	if resp.StatusCode != 200 {
+ 		log.Info().Msg("Waiting for login...")
+ 		return nil, "", nil
+ 	}
+ 
+-	buf := new(bytes.Buffer)
+-	if _, err := io.Copy(buf, resp.Body); err != nil {
++	buf, err := io.ReadAll(io.LimitReader(resp.Body, maximumTransferResponse+1))
++	if err != nil {
+ 		return nil, "", err
+ 	}
+-	return buf.Bytes(), resp.Header.Get("service-public-key"), nil
++	if len(buf) > maximumTransferResponse {
++		return nil, "", errTransferTooLarge
++	}
++	return buf, resp.Header.Get("service-public-key"), nil
+ }
+--- a/cmd/cloudflared/access/cmd.go
++++ b/cmd/cloudflared/access/cmd.go
+@@ -1,6 +1,7 @@
+ package access
+ 
+ import (
++	"context"
+ 	"fmt"
+ 	"io"
+ 	"net/http"
+@@ -591,7 +592,9 @@
+ 		},
+ 		Timeout: time.Second * 5,
+ 	}
+-	resp, err := client.Do(req)
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	resp, err := tokenCheckRequest(ctx, client, req, time.Second)
+ 	if err != nil {
+ 		return false, err
+ 	}
+@@ -600,3 +603,23 @@
+ 	// A redirect to login means the token was invalid.
+ 	return !carrier.IsAccessResponse(resp), nil
+ }
++
++// Retry the existing token check without creating another browser handoff.
++func tokenCheckRequest(ctx context.Context, client *http.Client, req *http.Request, retryDelay time.Duration) (*http.Response, error) {
++	for {
++		resp, err := client.Do(req.Clone(ctx))
++		if err == nil && resp.StatusCode < 500 {
++			return resp, nil
++		}
++		if resp != nil {
++			_ = resp.Body.Close()
++		}
++		timer := time.NewTimer(retryDelay)
++		select {
++		case <-ctx.Done():
++			timer.Stop()
++			return nil, ctx.Err()
++		case <-timer.C:
++		}
++	}
++}
