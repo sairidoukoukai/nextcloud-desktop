@@ -32,6 +32,7 @@ class AccountState;
 class FolderDefinition;
 class CloudflareAccessSettingsController;
 class CloudflareAccess;
+class CloudflareBrowserLogin;
 
 namespace Utility
 {
@@ -112,18 +113,21 @@ public:
         BrowserAuthStep,
         BasicAuthStep,
         SyncOptionsStep,
-        CompletedStep
+        CompletedStep,
     };
     Q_ENUM(Step)
 
     enum SyncMode {
         SyncEverything = 0,
         SelectiveSync,
-        VirtualFiles
+        VirtualFiles,
     };
     Q_ENUM(SyncMode)
 
-    explicit AccountWizardController(QObject *parent = nullptr, CloudflareAccess *cloudflareAccess = nullptr);
+    explicit AccountWizardController(QObject *parent = nullptr,
+                                     CloudflareAccess *cloudflareAccess = nullptr,
+                                     CloudflareAccess *browserSession = nullptr,
+                                     CloudflareBrowserLogin *browserLogin = nullptr);
     ~AccountWizardController() override;
 
     /** @brief Sets the wizard window that native panels are attached to. */
@@ -278,6 +282,9 @@ private Q_SLOTS:
 
 private:
     CloudflareAccess *_cloudflareAccess;
+    bool _browserAccessPending = false;
+    QPointer<CloudflareAccess> _browserSession;
+    [[nodiscard]] CloudflareAccess *browserSession() const;
     CloudflareAccessSettingsController *_cloudflareAccessSettings;
     using LocalNetworkPermissionCheck = std::function<void(const QUrl &, QObject *, std::function<void(bool)>)>;
     // Reports the chosen folder, or an empty path when cancelled, and its security-scoped bookmark if any.

@@ -4,6 +4,7 @@
  */
 
 #include "cloudflareaccesssettings.h"
+#include "cloudflareaccess.h"
 
 #include "accountmanager.h"
 #include "cloudflareaccesssettingscontroller.h"
@@ -31,6 +32,7 @@ CloudflareAccessSettings::CloudflareAccessSettings(QWidget *parent, CloudflareAc
     , _clientId(new QLineEdit(this))
     , _clientSecret(new QLineEdit(this))
     , _apply(new QPushButton(tr("Apply"), this))
+    , _browserSignIn(new QPushButton(tr("Browser sign-in"), this))
     , _error(new QLabel(this))
     , _form(new QFormLayout)
 {
@@ -53,6 +55,7 @@ CloudflareAccessSettings::CloudflareAccessSettings(QWidget *parent, CloudflareAc
     layout->addLayout(content);
     const auto label = new QLabel(tr("Enable Cloudflare Access"), this);
     label->setBuddy(_enabled);
+    label->setObjectName("cloudflareManualEnabledLabel"_L1);
     content->addWidget(label, 0, 0);
     content->addWidget(_enabled, 0, 1, Qt::AlignRight);
     _form->setContentsMargins(0, 0, 0, 0);
@@ -71,6 +74,15 @@ CloudflareAccessSettings::CloudflareAccessSettings(QWidget *parent, CloudflareAc
     content->addWidget(hint, 2, 0, 1, 2);
     content->addWidget(_error, 3, 0, 1, 2);
     content->addWidget(_apply, 4, 0, 1, 2, Qt::AlignRight);
+    _browserSignIn->setObjectName("cloudflareBrowserSignIn"_L1);
+    content->addWidget(_browserSignIn, 5, 0, 1, 2);
+    connect(_browserSignIn, &QPushButton::clicked, this, [this] {
+        if (_controller->busy()) {
+            _controller->cancelBrowserSignIn();
+        } else {
+            _controller->signInBrowser(_accounts->currentData().toString());
+        }
+    });
     connect(_enabled, &QAbstractButton::toggled, this, [this] {
         _dirty = true;
         updateEnabled();
@@ -110,7 +122,7 @@ CloudflareAccessSettings::CloudflareAccessSettings(QWidget *parent, CloudflareAc
 
 void CloudflareAccessSettings::loadAccounts()
 {
-    const auto previous = _accounts->currentData().toString();
+    const auto previous = _accounts->currentData(Qt::UserRole + 1).toString();
     const auto blocker = QSignalBlocker(_accounts);
     _accounts->clear();
     const auto accounts = AccountManager::instance()->accounts();
@@ -119,7 +131,8 @@ void CloudflareAccessSettings::loadAccounts()
         const auto account = state->account();
         const auto url = account->url().toString();
         _accounts->addItem(account->displayName(), url);
-        if (url == previous || (selected < 0 && _controller->isConfiguredForServer(url))) {
+        _accounts->setItemData(_accounts->count() - 1, account->uuid().toString(), Qt::UserRole + 1);
+        if (account->uuid().toString() == previous || (previous.isEmpty() && selected < 0 && _controller->isConfiguredForServer(url))) {
             selected = _accounts->count() - 1;
         }
     }
@@ -131,6 +144,12 @@ void CloudflareAccessSettings::loadAccounts()
 
 void CloudflareAccessSettings::load()
 {
+    for (const auto &state : AccountManager::instance()->accounts()) {
+        if (state->account()->uuid().toString() == _accounts->currentData(Qt::UserRole + 1).toString()) {
+            _controller->setBrowserAccess(state->account()->browserAccess());
+            break;
+        }
+    }
     const auto blocker = QSignalBlocker(_enabled);
     const auto configured = _controller->isConfiguredForServer(_accounts->currentData().toString());
     _enabled->setChecked(configured && _controller->enabled());
@@ -151,7 +170,21 @@ void CloudflareAccessSettings::showEvent(QShowEvent *event)
 
 void CloudflareAccessSettings::updateEnabled()
 {
+    const auto browserServer = CloudflareAccess::origin(QUrl(_accounts->currentData().toString())) == QUrl("https://nc.sairibus.com"_L1);
+    for (const auto field : {_clientId, _clientSecret}) {
+        field->setVisible(!browserServer);
+        _form->labelForField(field)->setVisible(!browserServer);
+    }
+    _enabled->setVisible(!browserServer);
+    findChild<QLabel *>("cloudflareManualEnabledLabel"_L1)->setVisible(!browserServer);
+    findChild<QLabel *>("cloudflareAccessHint"_L1)
+        ->setText(browserServer ? tr("Sign in with your Sairibus account in the browser. Your device password and sync folders are retained.")
+                                : tr("Service credentials apply to one HTTPS server in this profile. macOS File Provider is not supported."));
+    _apply->setVisible(!browserServer);
+    _browserSignIn->setVisible(browserServer);
     _accounts->setEnabled(!_controller->busy());
+    _browserSignIn->setEnabled(_accounts->currentIndex() >= 0);
+    _browserSignIn->setText(_controller->busy() ? tr("Cancel browser sign-in") : tr("Browser sign-in"));
     _enabled->setEnabled(!_controller->busy() && _accounts->currentIndex() >= 0);
     for (const auto field : {_clientId, _clientSecret}) {
         field->setEnabled(_enabled->isChecked() && !_controller->busy());
@@ -160,5 +193,4 @@ void CloudflareAccessSettings::updateEnabled()
     _apply->setEnabled(!_controller->busy() && _accounts->currentIndex() >= 0
                        && (_enabled->isChecked() || _controller->isConfiguredForServer(_accounts->currentData().toString())));
 }
-
 }

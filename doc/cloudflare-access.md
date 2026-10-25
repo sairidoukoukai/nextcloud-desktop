@@ -5,34 +5,39 @@
 
 # Cloudflare Access
 
-The desktop client's classic sync engine can use a Cloudflare Access service
-token to reach a protected Nextcloud server. Nextcloud authentication is still
-required.
+The classic desktop client can connect through Cloudflare Access while using
+Nextcloud's own browser approval and per-device application password.
 
-For a new account, enter the HTTPS server address in the account setup wizard,
-then select **Cloudflare Access…** before continuing to the server check. Enable
-the setting, enter the service token's **Client ID** and **Client Secret**, and
-select **Apply**. For an existing account, open **Settings → Advanced**, select
-the account under **Cloudflare Access**, and update its credentials there.
-Both places edit the same configuration. Applying this configuration saves it
-even if account setup is subsequently cancelled.
+## Sairibus browser login
 
-The configuration applies to one server origin per local client profile. All
-accounts on that hostname and HTTPS port share it. A path in the entered URL
-is removed: the headers apply to every path on that origin. Different hosts,
-ports, and unencrypted connections receive no service-token headers.
-To replace the configured server, first disable its Cloudflare Access setting
-and select **Apply**. Enabling a different server then replaces the saved pair.
+Enter `https://nc.sairibus.com` in the account wizard and continue. The client
+opens the browser for 再バ同アカウント sign-in. Use a passkey or an email code,
+then approve the device in Nextcloud and choose the folders to synchronize.
 
-The token pair is stored in the operating system's credential store. The
-configuration file contains the server origin, enabled flag, and a reference
-to the credential-store entry. Disabling Cloudflare Access retains the token
-for later use and stops adding its headers to new requests.
+The Windows installer bundles the pinned official cloudflared helper. It runs
+`access login --no-verbose --auto-close` for the exact HTTPS origin. The client
+checks the binary hash before execution and stores the resulting application
+JWT in QtKeychain. Each local account UUID has its own credential entry; a
+session for another central identity cannot replace it.
 
-The client rejects `CF_Authorization` cookies so that a cached Access session
-cannot outlive a service-token change. Normal Nextcloud cookies are retained.
-HTTP diagnostics redact cookies and service-token headers. Request and response
-bodies are omitted for service-token requests and credential exchanges.
+The helper's application and organization token cache lives in an owned,
+disposable directory with private permissions. The client deletes it after the
+helper exits, including cancellation and timeout. It leaves the user's regular
+cloudflared configuration untouched.
+
+Cloudflare session lifetime follows the server policy. To renew a session,
+select the account under **Settings → Advanced** and choose **Browser sign-in**.
+The client retains the Nextcloud device password when Access expires or is
+unreachable. It sends `cf-access-token` only to the bound origin, strips it from
+other requests and redacts it from diagnostics. Protected request bodies are
+omitted from HTTP logs.
+
+## Administrator-issued service credentials
+
+Other servers can use **Cloudflare Access…** in the setup wizard. Enter the
+operator-issued Client ID and Client Secret. Existing accounts can edit them
+under **Settings → Advanced**. This mode stores one shared service credential
+per profile and HTTPS origin. Disable it before replacing the origin.
 
 ## Server configuration
 

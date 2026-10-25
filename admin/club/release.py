@@ -10,10 +10,16 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tarfile
+import tempfile
+import urllib.request
 
 UPSTREAM_BASE = "76ef152f8c98009c910f124af1da20876e3915e9"
 BLUEPRINTS_COMMIT = "d9829275a569d3cf83e42ad9c50140074d01dd9f"
 RECIPE_PATCH = Path(__file__).resolve().parent / "patches/0001-nextcloud-blueprint-packaging.patch"
+HELPER = json.loads((Path(__file__).resolve().parent / "cloudflared.json").read_text())
 EXPECTED_TESTS = {
     "CloudflareAccessTest", "CookiesTest", "AccountWizardControllerTest",
     "AccountWizardWindowQmlTest", "SettingsDialogTest", "PushNotificationsTest",
@@ -40,6 +46,67 @@ def validate(tag, ref, head, main, existing_refs=()):
     return tag.removeprefix("v35.0.0-")
 
 
+def download_verified(url, expected, target):
+    maximum_bytes = 128 * 1024 * 1024
+    size = 0
+    digest = hashlib.sha256()
+    with urllib.request.urlopen(url, timeout=60) as response, target.open("wb") as output:
+        while data := response.read(1024 * 1024):
+            size += len(data)
+            if size > maximum_bytes:
+                raise ValueError("Pinned helper download exceeds the size limit.")
+            output.write(data)
+            digest.update(data)
+    if digest.hexdigest() != expected:
+        target.unlink(missing_ok=True)
+        raise ValueError("Pinned helper download checksum mismatch.")
+
+
+def license_notices(modules):
+    sections = []
+    for module in modules:
+        directory = Path(module["Dir"])
+        notices = sorted(p for p in directory.rglob("*") if p.is_file() and not p.is_symlink()
+                         and p.name.upper().split(".")[0] in {"LICENSE", "LICENCE", "COPYING", "NOTICE", "PATENTS"})
+        if not notices:
+            raise ValueError("Missing dependency license: " + module["Path"])
+        for notice in notices:
+            if notice.stat().st_size > 1024 * 1024:
+                raise ValueError("Dependency license exceeds the size limit.")
+            sections.append(f"{module['Path']} {module.get('Version', '')} — {notice.relative_to(directory)}\n"
+                            + notice.read_text(encoding="utf-8", errors="replace"))
+    return "\n\n".join(sections) + "\n"
+
+
+def install_helper(directory):
+    directory.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="nextcloud-helper-") as temporary:
+        stage = Path(temporary)
+        executable = stage / "cloudflared.exe"
+        download_verified(HELPER["windows_amd64"]["url"], HELPER["windows_amd64"]["sha256"], executable)
+        archive = stage / "source.tar.gz"
+        download_verified(HELPER["source_url"], HELPER["source_sha256"], archive)
+        with tarfile.open(archive) as contents:
+            contents.extractall(stage / "source", filter="data")
+        source = stage / "source" / ("cloudflared-" + HELPER["source_commit"])
+        env = dict(os.environ, GOMODCACHE=str(stage / "modules"), GOOS="windows", GOARCH="amd64")
+        # Go authenticates module archives against the pinned source's go.sum.
+        downloaded = subprocess.run(["go", "mod", "download", "-json"], cwd=source, env=env,
+                                    check=True, capture_output=True, text=True, timeout=600).stdout
+        modules = [{"Path": "github.com/cloudflare/cloudflared", "Version": HELPER["version"], "Dir": str(source)}]
+        decoder = json.JSONDecoder()
+        remaining = downloaded.lstrip()
+        while remaining:
+            module, offset = decoder.raw_decode(remaining)
+            if module.get("Error") or not module.get("Dir"):
+                raise ValueError("Could not authenticate a helper dependency.")
+            modules.append(module)
+            remaining = remaining[offset:].lstrip()
+        notices = license_notices(modules)
+        (directory / "nextcloud-cloudflared-LICENSE.txt").write_text(notices, encoding="utf-8")
+        shutil.copyfile(executable, directory / HELPER["windows_amd64"]["installed_name"])
+
+
 def checksums(directory, tag, source):
     validate(tag, "refs/heads/main", source, source)
     installer = directory / f"Nextcloud-{tag.removeprefix('v')}-windows-x64.exe"
@@ -52,6 +119,7 @@ def checksums(directory, tag, source):
     info.write_text(json.dumps({
         "release_tag": tag, "source_commit": source, "upstream_base": UPSTREAM_BASE,
         "platform": "windows-x64", "signature": "unsigned", "official_updater": False,
+        "browser_login_helper": HELPER,
         "packaging_recipe": {
             "upstream_commit": BLUEPRINTS_COMMIT,
             "patch_path": "admin/club/patches/0001-nextcloud-blueprint-packaging.patch",
@@ -68,10 +136,15 @@ def checksums(directory, tag, source):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["validate", "checksums", "test-list"])
+    parser.add_argument("command", choices=["validate", "checksums", "test-list", "helper"])
     parser.add_argument("path", nargs="?", type=Path)
     args = parser.parse_args()
     try:
+        if args.command == "helper":
+            if args.path is None:
+                raise ValueError("Specify the helper installation directory.")
+            install_helper(args.path)
+            return
         if args.command == "test-list":
             if args.path is None:
                 raise ValueError("Specify the CTest inventory file.")
@@ -88,7 +161,7 @@ def main():
         if output := os.environ.get("GITHUB_OUTPUT"):
             with open(output, "a") as stream:
                 stream.write(f"suffix={suffix}\n")
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as error:
         parser.exit(1, str(error) + "\n")
 
 

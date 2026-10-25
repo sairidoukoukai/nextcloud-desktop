@@ -4,6 +4,11 @@
  */
 
 #include "accessmanager.h"
+#include "cloudflarebrowserlogin.h"
+#include "cloudflarebrowsertestutils.h"
+#include <QCryptographicHash>
+#include <QDateTime>
+#include <QJsonArray>
 #include "cloudflareaccess.h"
 #include "cloudflareaccesstestserver.h"
 #include "configfile.h"
@@ -27,6 +32,7 @@
 
 using namespace OCC;
 using namespace Qt::StringLiterals;
+using OCC::Test::browserToken;
 
 class TestCloudflareAccess : public QObject
 {
@@ -61,6 +67,151 @@ private Q_SLOTS:
         QVERIFY(_directory->isValid());
         ConfigFile::setConfDir(_directory->path());
         _entries.clear();
+    }
+
+    void browserSessionsAreAccountAndOriginBound()
+    {
+        CloudflareAccess first(nullptr, storage(), std::chrono::seconds(1), "account-one"_L1);
+        CloudflareAccess other(nullptr, storage(), std::chrono::seconds(1), "account-two"_L1);
+        const auto token = browserToken();
+        first.saveBrowserToken("https://cloud.example"_L1, token);
+        QVERIFY(first.ready());
+        QVERIFY(first.browserMode());
+        QVERIFY(!other.enabled());
+        CloudflareAccess restored(nullptr, storage(), std::chrono::seconds(1), "account-one"_L1);
+        QVERIFY(restored.enabled());
+        QVERIFY(restored.ready());
+        auto request = QNetworkRequest(QUrl("https://cloud.example/remote.php/dav"_L1));
+        request.setRawHeader("CF-Access-Client-Id", "stale-service-id");
+        request.setRawHeader("CF-Access-Client-Secret", "stale-service-secret");
+        QVERIFY(restored.prepareRequest(request).isEmpty());
+        QCOMPARE(request.rawHeader("cf-access-token"), token);
+        QVERIFY(!request.hasRawHeader("CF-Access-Client-Id"));
+        QVERIFY(!request.hasRawHeader("CF-Access-Client-Secret"));
+        QVERIFY(CloudflareAccess::hasCredentials(request));
+        request.setUrl(QUrl("https://elsewhere.example/"_L1));
+        QVERIFY(restored.prepareRequest(request).isEmpty());
+        QVERIFY(!request.hasRawHeader("cf-access-token"));
+        QFile config(ConfigFile().configFile());
+        QVERIFY(config.open(QIODevice::ReadOnly));
+        QVERIFY(!config.readAll().contains(token));
+        first.saveBrowserToken("https://cloud.example"_L1, browserToken(QDateTime::currentSecsSinceEpoch() + 3600, "eeeeeeee-1111-4444-9999-111111111111"_L1));
+        QVERIFY(!first.error().isEmpty());
+        first.clear();
+        CloudflareAccess removed(nullptr, storage(), std::chrono::seconds(1), "account-one"_L1);
+        QVERIFY(!removed.enabled());
+    }
+
+    void staleServiceChallengeCannotMatchBrowserSession()
+    {
+        CloudflareAccess service(nullptr, storage());
+        CloudflareAccess browser(nullptr, storage(), std::chrono::seconds(1), "account-one"_L1);
+        service.save(true, "https://cloud.example"_L1, "client"_L1, "secret"_L1);
+        auto request = QNetworkRequest(QUrl("https://cloud.example/remote.php/dav"_L1));
+        QVERIFY(service.prepareRequest(request).isEmpty());
+        browser.saveBrowserToken("https://cloud.example"_L1, browserToken());
+        QVERIFY(service.matchesCurrentRequest(request));
+        QVERIFY(!browser.matchesCurrentRequest(request));
+        QVERIFY(browser.prepareRequest(request).isEmpty());
+        QVERIFY(browser.matchesCurrentRequest(request));
+        QVERIFY(!service.matchesCurrentRequest(request));
+    }
+
+    void browserExpiryAndMalformedTokensAreRejected()
+    {
+        CloudflareAccess access(nullptr, storage(), std::chrono::seconds(1), "account-one"_L1);
+        for (const auto &token : {QByteArray("not-a-jwt"), browserToken(QDateTime::currentSecsSinceEpoch() - 1), QByteArray(20000, 'x')}) {
+            access.saveBrowserToken("https://cloud.example"_L1, token);
+            QVERIFY(!access.error().isEmpty());
+            QVERIFY(!access.enabled());
+        }
+        access.saveBrowserToken("https://cloud.example"_L1, browserToken(QDateTime::currentSecsSinceEpoch() + 1));
+        QVERIFY(access.ready());
+        QTRY_VERIFY(!access.ready());
+        auto request = QNetworkRequest(QUrl("https://cloud.example/remote.php/dav"_L1));
+        QVERIFY(!access.prepareRequest(request).isEmpty());
+        QVERIFY(!request.hasRawHeader("cf-access-token"));
+    }
+
+    void browserHelperSuccessAndPrivateCacheCleanup()
+    {
+        const auto helper = QString::fromUtf8(CLOUDFLARE_TEST_HELPER);
+        QFile executable(helper);
+        QVERIFY(executable.open(QIODevice::ReadOnly));
+        const auto digest = QCryptographicHash::hash(executable.readAll(), QCryptographicHash::Sha256).toHex();
+        const auto report = _directory->filePath("helper-report.json"_L1);
+        qputenv("NEXTCLOUD_TEST_HELPER_REPORT", report.toUtf8());
+        qputenv("NEXTCLOUD_TEST_HELPER_MODE", "success");
+        const auto token = browserToken();
+        qputenv("NEXTCLOUD_TEST_HELPER_TOKEN", token);
+        const auto environment = qgetenv("HOME");
+        CloudflareBrowserLogin login(nullptr, helper, digest);
+        QSignalSpy finished(&login, &CloudflareBrowserLogin::finished);
+        login.start(QUrl("https://cloud.example/a-path"_L1));
+        QTRY_COMPARE(finished.size(), 1);
+        QCOMPARE(finished[0][0].toByteArray(), token);
+        QVERIFY(finished[0][1].toString().isEmpty());
+        QVERIFY(!login.busy());
+        QFile captured(report);
+        QVERIFY(captured.open(QIODevice::ReadOnly));
+        const auto info = QJsonDocument::fromJson(captured.readAll()).object();
+        QVERIFY(!QFileInfo::exists(info.value("cache"_L1).toString()));
+        QCOMPARE(info.value("arguments"_L1).toArray().last().toString(), "https://cloud.example"_L1);
+        QCOMPARE(qgetenv("HOME"), environment);
+        qunsetenv("NEXTCLOUD_TEST_HELPER_REPORT");
+        qunsetenv("NEXTCLOUD_TEST_HELPER_MODE");
+        qunsetenv("NEXTCLOUD_TEST_HELPER_TOKEN");
+    }
+
+    void browserHelperFailures_data()
+    {
+        QTest::addColumn<QString>("mode");
+        QTest::addColumn<bool>("cancel");
+        QTest::newRow("process error") << "failure" << false;
+        QTest::newRow("malformed response") << "success" << false;
+        QTest::newRow("timeout") << "wait" << false;
+        QTest::newRow("cancel") << "wait" << true;
+    }
+
+    void browserHelperFailures()
+    {
+        QFETCH(QString, mode);
+        QFETCH(bool, cancel);
+        const auto helper = QString::fromUtf8(CLOUDFLARE_TEST_HELPER);
+        QFile executable(helper);
+        QVERIFY(executable.open(QIODevice::ReadOnly));
+        const auto digest = QCryptographicHash::hash(executable.readAll(), QCryptographicHash::Sha256).toHex();
+        const auto report = _directory->filePath("helper-report.json"_L1);
+        qputenv("NEXTCLOUD_TEST_HELPER_REPORT", report.toUtf8());
+        qputenv("NEXTCLOUD_TEST_HELPER_MODE", mode.toUtf8());
+        qputenv("NEXTCLOUD_TEST_HELPER_TOKEN", "synthetic invalid token");
+        CloudflareBrowserLogin login(nullptr, helper, digest, std::chrono::milliseconds(1000));
+        QSignalSpy finished(&login, &CloudflareBrowserLogin::finished);
+        login.start(QUrl("https://cloud.example"_L1));
+        QTRY_VERIFY(QFileInfo::exists(report));
+        if (cancel) {
+            login.cancel();
+        }
+        QTRY_COMPARE(finished.size(), 1);
+        QVERIFY(finished[0][0].toByteArray().isEmpty());
+        QVERIFY(!finished[0][1].toString().isEmpty());
+        QVERIFY(!login.busy());
+        QFile captured(report);
+        QVERIFY(captured.open(QIODevice::ReadOnly));
+        QVERIFY(!QFileInfo::exists(QJsonDocument::fromJson(captured.readAll()).object().value("cache"_L1).toString()));
+        qunsetenv("NEXTCLOUD_TEST_HELPER_REPORT");
+        qunsetenv("NEXTCLOUD_TEST_HELPER_MODE");
+        qunsetenv("NEXTCLOUD_TEST_HELPER_TOKEN");
+    }
+
+    void browserHelperRejectsUnverifiedBinary()
+    {
+        CloudflareBrowserLogin login(nullptr, QString::fromUtf8(CLOUDFLARE_TEST_HELPER), QByteArray(64, '0'));
+        QSignalSpy finished(&login, &CloudflareBrowserLogin::finished);
+        login.start(QUrl("https://cloud.example"_L1));
+        QCOMPARE(finished.size(), 1);
+        QVERIFY(finished[0][0].toByteArray().isEmpty());
+        QVERIFY(!login.busy());
     }
 
     void validation_data()
@@ -259,6 +410,8 @@ private Q_SLOTS:
         for (const auto name : {"CF-Access-Client-Id",
                                 "cf-access-client-secret",
                                 "CF-ACCESS-CLIENT-SECRET",
+                                "cf-access-token",
+                                "CF-ACCESS-TOKEN",
                                 "Cookie",
                                 "cOoKiE",
                                 "Set-Cookie",
@@ -278,7 +431,7 @@ private Q_SLOTS:
         request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
         QVERIFY(!HttpLogger::bodyLoggingAllowed(request));
         request.setAttribute(HttpLogger::SensitiveBodyAttribute, false);
-        for (const auto name : {"CF-Access-Client-Id", "cf-access-client-secret"}) {
+        for (const auto name : {"CF-Access-Client-Id", "cf-access-client-secret", "cf-access-token"}) {
             request.setRawHeader(name, "synthetic-credential");
             QVERIFY(!HttpLogger::bodyLoggingAllowed(request));
             request.setRawHeader(name, QByteArray{});

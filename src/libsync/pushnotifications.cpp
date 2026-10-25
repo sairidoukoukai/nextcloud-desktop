@@ -24,7 +24,7 @@ Q_LOGGING_CATEGORY(lcPushNotifications, "nextcloud.sync.pushnotifications", QtIn
 PushNotifications::PushNotifications(Account *account, QObject *parent, CloudflareAccess *cloudflareAccess)
     : QObject(parent)
     , _account(account)
-    , _cloudflareAccess(cloudflareAccess ? cloudflareAccess : CloudflareAccess::instance())
+    , _cloudflareAccess(cloudflareAccess ? cloudflareAccess : (account->browserAccess()->enabled() ? account->browserAccess() : CloudflareAccess::instance()))
     , _webSocket(new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this))
 {
     connect(_webSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::errorOccurred), this, &PushNotifications::onWebSocketError);
@@ -40,6 +40,14 @@ PushNotifications::PushNotifications(Account *account, QObject *parent, Cloudfla
     connect(&_pingTimedOutTimer, &QTimer::timeout, this, &PushNotifications::onPingTimedOut);
     _pingTimedOutTimer.setSingleShot(true);
     _pingTimedOutTimer.setInterval(PING_INTERVAL);
+    if (!cloudflareAccess && _cloudflareAccess != account->browserAccess()) {
+        connect(account->browserAccess(), &CloudflareAccess::configurationChanged, this, [this] {
+            _cloudflareAccess = _account->browserAccess()->enabled() ? _account->browserAccess() : CloudflareAccess::instance();
+            if (_started) {
+                reconnectToWebSocket();
+            }
+        });
+    }
     connect(_cloudflareAccess, &CloudflareAccess::configurationChanged, this, [this] {
         if (_started && (_usesCloudflare || _cloudflareAccess->protects(_account->capabilities().pushNotificationsWebSocketUrl()))) {
             reconnectToWebSocket();

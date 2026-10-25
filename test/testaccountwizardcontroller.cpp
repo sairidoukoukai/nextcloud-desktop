@@ -4,6 +4,7 @@
  */
 
 #include "abstractnetworkjob.h"
+#include "cloudflarebrowsertestutils.h"
 #include "accessmanager.h"
 #include "account.h"
 #include "cloudflareaccess.h"
@@ -124,6 +125,52 @@ class TestAccountWizardController : public QObject
     Q_OBJECT
 
 private Q_SLOTS:
+    void browserWizardStartsAndResumesAfterCentralLogin()
+    {
+        QTemporaryDir directory;
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        CloudflareAccess session(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        OCC::Test::BrowserLogin helper;
+        AccountWizardController wizard(nullptr, nullptr, &session, &helper);
+        wizard.setServerUrl(u"https://nc.sairibus.com"_s);
+        wizard.submitServerUrl();
+        QVERIFY(wizard.busy());
+        QCOMPARE(helper.requested, QUrl(u"https://nc.sairibus.com"_s));
+        QVERIFY(!session.enabled());
+        helper.succeed();
+        QVERIFY(session.enabled());
+        QVERIFY(session.ready());
+        QVERIFY(wizard.busy()); // Server discovery follows the saved Access session.
+        QCOMPARE(wizard.currentStep(), AccountWizardController::ServerStep);
+        // Destruction removes the queued discovery before any production I/O.
+    }
+
+    void browserWizardCancellationStopsTheHelper()
+    {
+        QTemporaryDir directory;
+        const auto previous = ConfigFile().configPath();
+        const auto restore = qScopeGuard([&] {
+            ConfigFile::setConfDir(previous);
+        });
+        ConfigFile::setConfDir(directory.path());
+        CloudflareAccess session(nullptr, [](const QString &, const std::optional<QByteArray> &, CloudflareAccess::Completion done) {
+            done({}, {});
+        });
+        OCC::Test::BrowserLogin helper;
+        AccountWizardController wizard(nullptr, nullptr, &session, &helper);
+        wizard.setServerUrl(u"https://nc.sairibus.com"_s);
+        wizard.submitServerUrl();
+        wizard.cancel();
+        QVERIFY(helper.cancelled);
+        QVERIFY(!session.enabled());
+    }
+
     void cloudflareDiscoveryResponses_data()
     {
         QTest::addColumn<bool>("enabled");

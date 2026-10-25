@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+import io
 
 spec = importlib.util.spec_from_file_location("club_release", Path(__file__).resolve().parents[1] / "release.py")
 release = importlib.util.module_from_spec(spec)
@@ -61,6 +63,7 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256((directory / name).read_bytes()).hexdigest(), digest)
             info = json.loads((directory / "build-info.json").read_text())
             self.assertEqual(info["source_commit"], "a" * 40)
+            self.assertEqual(info["browser_login_helper"], release.HELPER)
             self.assertEqual(info["signature"], "unsigned")
             self.assertFalse(info["official_updater"])
             self.assertEqual(info["packaging_recipe"]["upstream_commit"], release.BLUEPRINTS_COMMIT)
@@ -118,3 +121,34 @@ class PublicationTests(unittest.TestCase):
             self.assertNotIn("--latest=false", arguments)
             self.assertEqual(arguments[arguments.index("--title") + 1],
                              "Nextcloud v35.0.0-sairibus.3 — Sairibus")
+
+
+class HelperPackagingTests(unittest.TestCase):
+    def test_download_checks_bytes_against_the_pin(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "helper.exe"
+            content = b"MZsynthetic helper"
+            digest = hashlib.sha256(content).hexdigest()
+            with patch.object(release.urllib.request, "urlopen", return_value=io.BytesIO(content)):
+                release.download_verified("https://example.invalid/helper", digest, target)
+            self.assertEqual(target.read_bytes(), content)
+            with patch.object(release.urllib.request, "urlopen", return_value=io.BytesIO(content)):
+                with self.assertRaises(ValueError):
+                    release.download_verified("https://example.invalid/helper", "0" * 64, target)
+            self.assertFalse(target.exists())
+
+    def test_dependency_notices_include_nested_licenses(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "LICENSE").write_text("synthetic top-level license")
+            (root / "nested").mkdir()
+            (root / "nested/NOTICE.txt").write_text("synthetic dependency notice")
+            (root / "private.txt").write_text("excluded fixture data")
+            output = release.license_notices([{"Dir": str(root), "Path": "example.invalid/helper", "Version": "v1"}])
+            self.assertIn("synthetic top-level license", output)
+            self.assertIn("synthetic dependency notice", output)
+            self.assertNotIn("excluded fixture data", output)
+            (root / "LICENSE").unlink()
+            (root / "nested/NOTICE.txt").unlink()
+            with self.assertRaises(ValueError):
+                release.license_notices([{"Dir": str(root), "Path": "example.invalid/helper"}])

@@ -1,0 +1,11 @@
+{
+  "version": "2026.10.3",
+  "source_commit": "de6376c5af4a67cbc65258682e5a01781827643d",
+  "source_url": "https://codeload.github.com/cloudflare/cloudflared/tar.gz/de6376c5af4a67cbc65258682e5a01781827643d",
+  "source_sha256": "6c6901ae333508e1c529184bf90cb87ff59592620d293401db38415269908311",
+  "windows_amd64": {
+    "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.10.3/cloudflared-windows-amd64.exe",
+    "sha256": "76b2805253d0d6ffacb092a7acfbee99e7af6917835c0c5410e23f3ef5052da2",
+    "installed_name": "nextcloud-cloudflared.exe"
+  }
+}

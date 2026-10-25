@@ -4,6 +4,7 @@
  */
 
 #include "settingsdialog.h"
+#include "cloudflarebrowsertestutils.h"
 
 #include "account.h"
 #include "accountmanager.h"
@@ -43,6 +44,122 @@ class TestSettingsDialog : public QObject
     QPalette _originalPalette;
 
 private Q_SLOTS:
+    void browserRenewalWaitsForTheSavedAccountIdentity()
+    {
+        QByteArray stored;
+        const auto original = OCC::Test::browserToken();
+        {
+            OCC::CloudflareAccess session(
+                nullptr,
+                [&](const QString &, const std::optional<QByteArray> &data, OCC::CloudflareAccess::Completion done) {
+                    if (data) {
+                        stored = *data;
+                    }
+                    done(stored, {});
+                },
+                std::chrono::seconds(1),
+                u"loading-account"_s);
+            session.saveBrowserToken(u"https://nc.sairibus.com"_s, original);
+            QVERIFY(session.ready());
+        }
+        OCC::CloudflareAccess::Completion loaded;
+        OCC::CloudflareAccess session(
+            nullptr,
+            [&](const QString &, const std::optional<QByteArray> &data, OCC::CloudflareAccess::Completion done) {
+                if (!data) {
+                    loaded = std::move(done);
+                } else {
+                    done({}, {});
+                }
+            },
+            std::chrono::seconds(5),
+            u"loading-account"_s);
+        OCC::Test::BrowserLogin helper;
+        OCC::CloudflareAccessSettingsController controller(nullptr, nullptr, &helper);
+        controller.setBrowserAccess(&session);
+        QVERIFY(controller.busy());
+        controller.signInBrowser(u"https://nc.sairibus.com"_s);
+        QVERIFY(!helper.running);
+        QVERIFY(loaded);
+        loaded(stored, {});
+        QVERIFY(!controller.busy());
+        controller.signInBrowser(u"https://nc.sairibus.com"_s);
+        QVERIFY(helper.running);
+        helper.running = false;
+        Q_EMIT helper.finished(OCC::Test::browserToken(QDateTime::currentSecsSinceEpoch() + 3600, u"eeeeeeee-1111-4444-9999-111111111111"_s), {});
+        QVERIFY(!controller.busy());
+        QVERIFY(!controller.error().isEmpty());
+        auto request = QNetworkRequest(QUrl(u"https://nc.sairibus.com/status.php"_s));
+        QVERIFY(session.prepareRequest(request).isEmpty());
+        QCOMPARE(request.rawHeader("cf-access-token"), original);
+    }
+
+    void browserSignInRemovalDuringStorageDoesNotLockSettings()
+    {
+        OCC::CloudflareAccess::Completion pending;
+        OCC::CloudflareAccess session(
+            nullptr,
+            [&](const QString &, const std::optional<QByteArray> &data, OCC::CloudflareAccess::Completion done) {
+                if (data && !data->isEmpty()) {
+                    pending = std::move(done);
+                } else {
+                    done({}, {});
+                }
+            },
+            std::chrono::seconds(1),
+            u"fixture-account"_s);
+        OCC::Test::BrowserLogin helper;
+        OCC::CloudflareAccessSettingsController controller(nullptr, nullptr, &helper);
+        controller.setBrowserAccess(&session);
+        QSignalSpy finished(&controller, &OCC::CloudflareAccessSettingsController::browserFinished);
+        controller.signInBrowser(u"https://nc.sairibus.com"_s);
+        helper.succeed();
+        QVERIFY(controller.busy());
+        QVERIFY(pending);
+        session.clear();
+        QVERIFY(!controller.busy());
+        QCOMPARE(finished.size(), 1);
+        QVERIFY(!finished[0][0].toBool());
+        pending({}, {});
+        QVERIFY(!session.enabled());
+        controller.signInBrowser(u"https://nc.sairibus.com"_s);
+        QVERIFY(helper.running);
+        controller.cancelBrowserSignIn();
+        QVERIFY(helper.cancelled);
+        QVERIFY(!controller.busy());
+    }
+
+    void browserAccountSelectionSurvivesSameOriginRefresh()
+    {
+        const auto manager = OCC::AccountManager::instance();
+        QList<OCC::AccountState *> states;
+        const auto remove = qScopeGuard([&] {
+            for (const auto state : states) {
+                manager->removeAccountState(state);
+            }
+        });
+        const auto makeAccount = [&] {
+            const auto account = OCC::Account::create();
+            account->setUrl(QUrl(u"https://nc.sairibus.com"_s));
+            account->setCredentials(new FakeCredentials(new FakeQNAM({})));
+            states.append(manager->addAccount(account));
+            return account;
+        };
+        const auto personal = makeAccount();
+        const auto administrator = makeAccount();
+        OCC::CloudflareAccessSettings widget;
+        const auto accounts = widget.findChild<QComboBox *>(u"cloudflareAccessAccount"_s);
+        QVERIFY(accounts);
+        accounts->setCurrentIndex(0);
+        const auto selected = accounts->currentData(Qt::UserRole + 1).toString();
+        QCOMPARE(selected, personal->uuid().toString());
+        makeAccount();
+        QCOMPARE(accounts->currentData(Qt::UserRole + 1).toString(), selected);
+        QVERIFY(widget.findChild<QLineEdit *>(u"cloudflareAccessClientSecret"_s)->isHidden());
+        QVERIFY(!widget.findChild<QPushButton *>(u"cloudflareBrowserSignIn"_s)->isHidden());
+        Q_UNUSED(administrator)
+    }
+
     void cloudflarePanelMargins_data()
     {
         QTest::addColumn<bool>("dark");
