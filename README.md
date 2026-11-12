@@ -13,6 +13,8 @@ An unofficial fork maintained by 再履バス同好会 (Sairibus), based on Next
 
 Releases target Windows x64. Installers are unsigned. This fork disables the official automatic updater; install subsequent releases from this repository.
 
+For now, sign in to **https://nc.sairibus.com** once in a web browser before the first desktop setup.
+
 1. Enter **https://nc.sairibus.com** in the account wizard and continue.
 2. Sign in with your **再バ同アカウント** in the browser using a passkey or email code.
 3. Approve the device in Nextcloud, then choose the folders to sync.
@@ -41,7 +43,7 @@ The installation check uses NSIS's explicit all-users mode on a fresh 64-bit run
 
 The **Sairibus Windows release** workflow runs manually from `main`. It rejects other refs, stale source commits, invalid tags and existing tags. Publication rechecks `main` and the artifact checksums. Each publication is a regular GitHub release marked as Latest. Releases include `SHA256SUMS`, `build-info.json`, and the complete source archives.
 
-The installer bundles official cloudflared 2026.10.3, verified against [the pinned binary and source hashes](admin/club/cloudflared.json). Dependency license notices are collected from the authenticated Go modules and included with the helper. The silent installation check verifies the installed helper and notices.
+The installer bundles cloudflared `2026.10.3-sairibus.1`: Cloudflare's 2026.10.3 source with the [login retry patch](admin/club/patches/0002-cloudflared-login-retry.patch), built with a pinned Go toolchain and verified against [the pinned source, patch and binary hashes](admin/club/cloudflared.json). Dependency license notices are collected from the authenticated Go modules and included with the helper. The silent installation check verifies the installed helper and notices.
 
 Release automation uses standard GitHub-hosted runners. No signing credentials or server credentials are required. Review changes through pull requests before running a release.
 

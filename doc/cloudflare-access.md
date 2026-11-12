@@ -10,9 +10,11 @@ Nextcloud's own browser approval and per-device application password.
 
 ## Sairibus browser login
 
-Enter `https://nc.sairibus.com` in the account wizard and continue. The client
-opens the browser for 再バ同アカウント sign-in. Use a passkey or an email code,
-then approve the device in Nextcloud and choose the folders to synchronize.
+For now, sign in to `https://nc.sairibus.com` once in a web browser before the
+first desktop setup. Then enter `https://nc.sairibus.com` in the account wizard
+and continue. The client opens the browser for 再バ同アカウント sign-in. Use a
+passkey or an email code, then approve the device in Nextcloud and choose the
+folders to synchronize.
 
 The Windows installer bundles cloudflared built from pinned source with a small
 login retry patch. The patch and pinned Go toolchain are recorded in
@@ -73,8 +75,8 @@ flow. Redirected, cached or malformed status responses cannot trigger it.
 
 ## Supported sync engines
 
-Cloudflare Access is supported by the classic sync engine on Windows, Linux,
-and macOS, including the classic engine's virtual-file implementations.
-The macOS File Provider engine uses a separate network stack and is not
-supported. Switch the server's accounts to classic sync before enabling
-Cloudflare Access; the client does not migrate those accounts automatically.
+Browser login runs the bundled helper, which only the Windows installer
+contains, so it works on Windows only; releases are published for Windows only.
+Service credentials work with the classic sync engine, including its
+virtual-file implementations. The macOS File Provider engine uses a separate
+network stack and does not support Cloudflare Access.
