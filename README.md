@@ -39,6 +39,8 @@ A [small patch](admin/club/patches/0001-nextcloud-blueprint-packaging.patch) rep
 
 The installation check uses NSIS's explicit all-users mode on a fresh 64-bit runner. It compares the installed executable and sync libraries with the tested build and checks the Start Menu shortcut's target.
 
+**Sairibus CI** runs on every pull request and every push to `main`: the release-script tests and the Windows build, test suites and installation check used for releases. Each run keeps its installer as a workflow artifact for seven days. Branch protection for `main` should require the **Windows build** and **Release script tests** checks.
+
 The **Sairibus Windows release** workflow runs manually from `main`. It rejects other refs, stale source commits, invalid tags and existing tags. Publication rechecks `main` and the artifact checksums. Each publication is a regular GitHub release marked as Latest. Releases include `SHA256SUMS`, `build-info.json`, and the complete source archives.
 
 The installer bundles official cloudflared 2026.10.3, verified against [the pinned binary and source hashes](admin/club/cloudflared.json). Dependency license notices are collected from the authenticated Go modules and included with the helper. The silent installation check verifies the installed helper and notices.

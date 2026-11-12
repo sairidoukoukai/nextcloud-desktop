@@ -9,8 +9,8 @@ $scratch = Join-Path $env:RUNNER_TEMP 'sairibus-craft'
 $master = Join-Path $scratch 'CraftMaster'
 $config = Join-Path $scratch 'craftmaster.ini'
 $root = Join-Path $scratch $target
-$suffix = $env:RELEASE_TAG -replace '^v35\.0\.0-', ''
-if ($suffix -notmatch '^sairibus\.[1-9][0-9]*$') { throw 'Invalid release suffix.' }
+$suffix = $env:CLUB_VERSION_SUFFIX
+if ($suffix -notmatch '^(sairibus\.[1-9][0-9]*|ci)$') { throw 'Invalid version suffix.' }
 New-Item -ItemType Directory -Path $scratch -Force | Out-Null
 $configuration = Get-Content (Join-Path $workspace 'admin/club/craftmaster.ini') -Raw
 $pythonDirectory = Split-Path (Get-Command python).Source
@@ -129,7 +129,7 @@ try {
     Assert-Source
     $artifacts = Join-Path $workspace 'artifacts'
     New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
-    Copy-Item $installers[0].FullName (Join-Path $artifacts "Nextcloud-$($env:RELEASE_TAG.Substring(1))-windows-x64.exe")
+    Copy-Item $installers[0].FullName (Join-Path $artifacts "Nextcloud-35.0.0-$suffix-windows-x64.exe")
 } finally {
     Pop-Location
 }
