@@ -73,6 +73,18 @@ constexpr auto webflowAuthPrefix = "webflow_";
 
 constexpr auto networkProxyPasswordKeychainKeySuffixC = "_proxy_password";
 
+QString proxyPasswordKeychainKey(const QString &appName, const QString &userIdAtHostWithPort)
+{
+    const QString key = userIdAtHostWithPort + QLatin1String(networkProxyPasswordKeychainKeySuffixC);
+#ifdef Q_OS_WIN
+    // Windows Credential Manager ignores the keychain service; namespace the key like AbstractCredentials::keychainKey().
+    return appName + QLatin1Char('_') + key;
+#else
+    Q_UNUSED(appName)
+    return key;
+#endif
+}
+
 
 // The maximum versions that this client can read
 constexpr auto maxAccountsVersion = 13;
@@ -438,7 +450,7 @@ void AccountManager::saveAccountHelper(const AccountPtr &account, QSettings &set
     settings.setValue(networkUploadLimitC, account->uploadLimit());
     settings.setValue(networkDownloadLimitC, account->downloadLimit());
 
-    const auto proxyPasswordKey = QString(account->userIdAtHostWithPort() + networkProxyPasswordKeychainKeySuffixC);
+    const auto proxyPasswordKey = proxyPasswordKeychainKey(Theme::instance()->appName(), account->userIdAtHostWithPort());
     if (const auto proxyPassword = account->proxyPassword(); proxyPassword.isEmpty()) {
         const auto job = new QKeychain::DeletePasswordJob(Theme::instance()->appName(), this);
         job->setKey(proxyPasswordKey);
@@ -698,9 +710,9 @@ AccountPtr AccountManager::loadAccountHelper(QSettings &settings)
     acc->setDownloadLimit(settings.value(networkDownloadLimitC).toInt());
 
     ConfigFile configFile;
-    const auto proxyPasswordKey = QString(acc->userIdAtHostWithPort() + networkProxyPasswordKeychainKeySuffixC);
     const auto appName = Migration::isUnbrandedToBrandedMigration() ? ConfigFile::unbrandedAppName
         : Theme::instance()->appName();
+    const auto proxyPasswordKey = proxyPasswordKeychainKey(appName, acc->userIdAtHostWithPort());
     const auto job = new QKeychain::ReadPasswordJob(appName, this);
     job->setKey(proxyPasswordKey);
     connect(job, &QKeychain::Job::finished, this, [acc](const QKeychain::Job *const incomingJob) {

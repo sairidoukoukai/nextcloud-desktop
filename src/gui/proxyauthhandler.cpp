@@ -254,5 +254,11 @@ QString ProxyAuthHandler::keychainUsernameKey() const
 
 QString ProxyAuthHandler::keychainPasswordKey() const
 {
-    return QString::fromLatin1("%1/password").arg(_proxy);
+    const QString key = QString::fromLatin1("%1/password").arg(_proxy);
+#ifdef Q_OS_WIN
+    // Windows Credential Manager ignores the keychain service; namespace the key like AbstractCredentials::keychainKey().
+    return Theme::instance()->appName() + QLatin1Char('_') + key;
+#else
+    return key;
+#endif
 }
