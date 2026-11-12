@@ -5,7 +5,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 -->
 # Nextcloud Desktop with Cloudflare Access
 
-An unofficial fork maintained by 再履バス同好会 (Sairibus), based on Nextcloud Desktop 35.0.0 with the subsequent `stable-35.0` fixes through [`76ef152`](https://github.com/nextcloud/desktop/commit/76ef152f8c98009c910f124af1da20876e3915e9). It connects the classic desktop client through Cloudflare Access browser login and Nextcloud's per-device authorization.
+An unofficial fork maintained by 再履バス同好会 (Sairibus), based on the Nextcloud Desktop stable branch for the version in [`VERSION.cmake`](VERSION.cmake). Each release names its upstream base commit in its notes and `build-info.json`. It connects the classic desktop client through Cloudflare Access browser login and Nextcloud's per-device authorization.
 
 [Download releases](https://github.com/sairidoukoukai/nextcloud-desktop/releases) · [Upstream project](https://github.com/nextcloud/desktop)
 
@@ -48,6 +48,25 @@ The installer bundles official cloudflared 2026.10.3, verified against [the pinn
 Release automation uses standard GitHub-hosted runners. No signing credentials or server credentials are required. Review changes through pull requests before running a release.
 
 For local development, follow the [upstream development documentation](doc). The focused test targets are `CloudflareAccessTest`, `CookiesTest`, `AccountWizardControllerTest`, `SettingsDialogTest`, `PushNotificationsTest`, `RemoteWipeTest`, `AccountStateTest`, `ConnectionValidatorTest`, `SyncEngineTest`, `SyncCfApiTest`, `UnifiedSharingTest`, and `WindowCloseQmlTest`; CTest also runs `AccountWizardWindowQmlTest`. `SyncCfApiTest` runs on Windows.
+
+## Upstream sync
+
+The client version is upstream's [`VERSION.cmake`](VERSION.cmake) and the upstream branch is `stable-<major>.<minor>` of that version. Release tags are `v<version>-sairibus.<n>`. The release workflow finds the upstream base commit itself, so a sync changes no release files.
+
+1. Merge the upstream branch on a new branch from `main`:
+
+   ```sh
+   git switch -c chore/sync-upstream origin/main
+   branch="stable-$(python3 admin/club/release.py version | cut -d. -f1,2)"
+   git fetch https://github.com/nextcloud/desktop.git "$branch"
+   git merge --no-ff -m "chore: sync upstream $branch" FETCH_HEAD
+   ```
+
+2. Keep this README and remove the upstream workflows that the merge restores or adds: `git rm -r -q --ignore-unmatch -- .github/workflows ':!.github/workflows/club-*'`. Resolve the remaining conflicts and commit.
+3. Open a pull request. **Sairibus CI** builds and tests the merge on Windows.
+4. After merging, run **Sairibus Windows release** with `v<version>-sairibus.1`, where `<version>` is `python3 admin/club/release.py version`. Later club releases on the same version count up.
+
+On each sync, compare upstream's `craftmaster.ini` with the club's. Upstream moves its Craft, blueprint and library pins within a series as well as between series; the club's pins live in [`craftmaster.ini`](admin/club/craftmaster.ini) and [`build-windows.ps1`](admin/club/build-windows.ps1).
 
 ## Provenance and license
 
