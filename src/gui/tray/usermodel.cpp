@@ -1173,6 +1173,7 @@ void User::slotProgressInfo(const QString &folder, const ProgressInfo &progress)
         }
         const auto &engine = f->syncEngine();
         const auto style = engine.lastLocalDiscoveryStyle();
+        auto outdatedErrors = ActivityList{};
         for (const auto errorsList = _activityModel->errorsList(); const auto &activity : errorsList) {
             if (activity._expireAtMsecs != -1) {
                 // we process expired activities in a different slot
@@ -1183,12 +1184,12 @@ void User::slotProgressInfo(const QString &folder, const ProgressInfo &progress)
             }
 
             if (style == LocalDiscoveryStyle::FilesystemOnly) {
-                _activityModel->removeActivityFromActivityList(activity);
+                outdatedErrors.append(activity);
                 continue;
             }
 
             if (const auto filePath = QString{f->path() + activity._file}; !FileSystem::fileExists(filePath)) {
-                _activityModel->removeActivityFromActivityList(activity);
+                outdatedErrors.append(activity);
                 continue;
             }
 
@@ -1198,9 +1199,10 @@ void User::slotProgressInfo(const QString &folder, const ProgressInfo &progress)
             }
 
             if (engine.shouldDiscoverLocally(path)) {
-                _activityModel->removeActivityFromActivityList(activity);
+                outdatedErrors.append(activity);
             }
         }
+        _activityModel->removeActivitiesFromActivityList(outdatedErrors);
     }
 
     if (progress.status() == ProgressInfo::Done) {
@@ -1462,10 +1464,10 @@ void User::processCompletedSyncItem(const Folder *folder, const SyncFileItemPtr 
                 activity._links = {buttonActivityLink};
             }
             _activityModel->addErrorToActivityList(activity, ActivityListModel::ErrorType::SyncError);
-        } else if (!item->_errorString.isEmpty()) {
-            // The item was ignored for a concrete reason (e.g. it lives in a read-only
-            // folder and cannot be uploaded). Surface it passively in the Not-synced list
-            // so the user can see why it did not sync.
+        } else if (item->_isUploadForbiddenItemKept) {
+            // The item could not be uploaded (it lives in a read-only folder) and its
+            // local-only data was kept on disk. Unlike other ignored items this is shown
+            // in the Not-synced list so the user can see why it never syncs.
             _activityModel->addErrorToActivityList(activity, ActivityListModel::ErrorType::SyncError);
         }
     }
