@@ -16,6 +16,24 @@ import io
 spec = importlib.util.spec_from_file_location("club_release", Path(__file__).resolve().parents[1] / "release.py")
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
+VERSION = release.client_version()
+TAG = f"v{VERSION}-sairibus.1"
+INSTALLER = f"Nextcloud-{VERSION}-sairibus.1-windows-x64.exe"
+
+
+class VersionTests(unittest.TestCase):
+    def test_version_comes_from_version_cmake(self):
+        text = "set(MIRALL_VERSION_MAJOR 36)\nset(MIRALL_VERSION_MINOR 1)\nset(MIRALL_VERSION_PATCH 2)\n"
+        self.assertEqual(release.client_version(text), "36.1.2")
+        self.assertEqual(release.upstream_branch("36.1.2"), "stable-36.1")
+        self.assertRegex(VERSION, r"^[0-9]+\.[0-9]+\.[0-9]+$")
+        with self.assertRaises(ValueError):
+            release.client_version("set(MIRALL_VERSION_MAJOR 36)\n")
+
+    def test_tag_follows_the_client_version(self):
+        self.assertEqual(release.validate("v36.1.2-sairibus.4", "refs/heads/main", "a" * 40, "a" * 40, version="36.1.2"), "sairibus.4")
+        with self.assertRaises(ValueError):
+            release.validate("v36.1.1-sairibus.4", "refs/heads/main", "a" * 40, "a" * 40, version="36.1.2")
 
 
 class ReleaseTests(unittest.TestCase):
@@ -28,26 +46,24 @@ class ReleaseTests(unittest.TestCase):
                     release.validate_tests({"tests": [{"name": name} for name in invalid]})
 
     def test_valid_release_identifies_suffix(self):
-        self.assertEqual(release.validate("v35.0.0-sairibus.1", "refs/heads/main", "a" * 40, "a" * 40), "sairibus.1")
+        self.assertEqual(release.validate(TAG, "refs/heads/main", "a" * 40, "a" * 40), "sairibus.1")
 
     def test_unmerged_and_stale_commits_are_rejected(self):
         for ref, head, main in [("refs/heads/feature", "a" * 40, "a" * 40),
-                                ("refs/tags/v35.0.0-sairibus.1", "a" * 40, "a" * 40),
+                                (f"refs/tags/{TAG}", "a" * 40, "a" * 40),
                                 ("refs/heads/main", "a" * 40, "b" * 40),
                                 ("refs/heads/main", "main", "main")]:
             with self.subTest(ref=ref, head=head):
                 with self.assertRaises(ValueError):
-                    release.validate("v35.0.0-sairibus.1", ref, head, main)
+                    release.validate(TAG, ref, head, main)
 
     def test_existing_tag_cannot_reuse_another_commit(self):
         with self.assertRaises(ValueError):
-            release.validate("v35.0.0-sairibus.1", "refs/heads/main", "a" * 40, "a" * 40,
-                             ["refs/tags/v35.0.0-sairibus.1"])
-        release.validate("v35.0.0-sairibus.1", "refs/heads/main", "a" * 40, "a" * 40,
-                         ["refs/tags/v35.0.0-sairibus.10"])
+            release.validate(TAG, "refs/heads/main", "a" * 40, "a" * 40, [f"refs/tags/{TAG}"])
+        release.validate(TAG, "refs/heads/main", "a" * 40, "a" * 40, [f"refs/tags/{TAG}0"])
 
     def test_tags_cannot_inject_paths_or_commands(self):
-        for tag in ["v35.0.0", "../installer", "v35.0.0-sairibus.0", "v35.0.0-sairibus.1;false", "v35.0.0-sairibus.1\n"]:
+        for tag in [f"v{VERSION}", "../installer", f"v{VERSION}-sairibus.0", f"v{VERSION}-sairibus.1;false", f"{TAG}\n"]:
             with self.subTest(tag=tag):
                 with self.assertRaises(ValueError):
                     release.validate(tag, "refs/heads/main", "a" * 40, "a" * 40)
@@ -55,14 +71,19 @@ class ReleaseTests(unittest.TestCase):
     def test_manifest_matches_actual_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            installer = directory / "Nextcloud-35.0.0-sairibus.1-windows-x64.exe"
+            installer = directory / INSTALLER
             installer.write_bytes(b"MZsynthetic executable")
-            release.checksums(directory, "v35.0.0-sairibus.1", "a" * 40)
+            release.checksums(directory, TAG, "a" * 40, "b" * 40)
             for row in (directory / "SHA256SUMS").read_text().splitlines():
                 digest, name = row.split("  ", 1)
                 self.assertEqual(hashlib.sha256((directory / name).read_bytes()).hexdigest(), digest)
             info = json.loads((directory / "build-info.json").read_text())
             self.assertEqual(info["source_commit"], "a" * 40)
+            self.assertEqual(info["upstream_base"], "b" * 40)
+            self.assertEqual(info["client_version"], VERSION)
+            self.assertEqual(info["upstream_branch"], release.upstream_branch(VERSION))
+            with self.assertRaises(ValueError):
+                release.checksums(directory, TAG, "a" * 40, "stable")
             self.assertEqual(info["browser_login_helper"], release.HELPER)
             self.assertEqual(info["signature"], "unsigned")
             self.assertFalse(info["official_updater"])
@@ -72,22 +93,22 @@ class ReleaseTests(unittest.TestCase):
     def test_missing_or_invalid_installer_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            installer = directory / "Nextcloud-35.0.0-sairibus.1-windows-x64.exe"
+            installer = directory / INSTALLER
             with self.assertRaises(ValueError):
-                release.checksums(directory, "v35.0.0-sairibus.1", "a" * 40)
+                release.checksums(directory, TAG, "a" * 40, "b" * 40)
             installer.write_bytes(b"not an executable")
             with self.assertRaises(ValueError):
-                release.checksums(directory, "v35.0.0-sairibus.1", "a" * 40)
+                release.checksums(directory, TAG, "a" * 40, "b" * 40)
 
     def test_linked_installer_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             target = directory / "elsewhere.exe"
             target.write_bytes(b"MZsynthetic executable")
-            installer = directory / "Nextcloud-35.0.0-sairibus.1-windows-x64.exe"
+            installer = directory / INSTALLER
             installer.symlink_to(target)
             with self.assertRaises(ValueError):
-                release.checksums(directory, "v35.0.0-sairibus.1", "a" * 40)
+                release.checksums(directory, TAG, "a" * 40, "b" * 40)
 
 
 class PublicationTests(unittest.TestCase):
@@ -108,11 +129,11 @@ class PublicationTests(unittest.TestCase):
             gh.chmod(0o755)
             captured = directory / "arguments.json"
             env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
-                       RELEASE_TAG="v35.0.0-sairibus.3", GH_ARGUMENTS=str(captured))
+                       RELEASE_TAG=f"v{VERSION}-sairibus.3", GH_ARGUMENTS=str(captured))
             subprocess.run(["bash", "-eu", "-c", command], cwd=directory, env=env, check=True)
             arguments = json.loads(captured.read_text())
-            self.assertEqual(arguments[:3], ["release", "create", "v35.0.0-sairibus.3"])
-            for asset in ["artifacts/Nextcloud-35.0.0-sairibus.3-windows-x64.exe",
+            self.assertEqual(arguments[:3], ["release", "create", f"v{VERSION}-sairibus.3"])
+            for asset in [f"artifacts/Nextcloud-{VERSION}-sairibus.3-windows-x64.exe",
                           "artifacts/build-info.json", "artifacts/SHA256SUMS"]:
                 self.assertIn(asset, arguments)
             self.assertIn("--verify-tag", arguments)
@@ -120,7 +141,7 @@ class PublicationTests(unittest.TestCase):
             self.assertFalse(any(arg.startswith(("--prerelease", "--draft")) for arg in arguments))
             self.assertNotIn("--latest=false", arguments)
             self.assertEqual(arguments[arguments.index("--title") + 1],
-                             "Nextcloud v35.0.0-sairibus.3 — Sairibus")
+                             f"Nextcloud v{VERSION}-sairibus.3 — Sairibus")
 
 
 class HelperPackagingTests(unittest.TestCase):

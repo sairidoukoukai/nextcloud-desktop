@@ -11,6 +11,8 @@ $config = Join-Path $scratch 'craftmaster.ini'
 $root = Join-Path $scratch $target
 $suffix = $env:CLUB_VERSION_SUFFIX
 if ($suffix -notmatch '^(sairibus\.[1-9][0-9]*|ci)$') { throw 'Invalid version suffix.' }
+$version = & python (Join-Path $workspace 'admin/club/release.py') version
+if ($LASTEXITCODE -ne 0 -or $version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Cannot read the client version.' }
 New-Item -ItemType Directory -Path $scratch -Force | Out-Null
 $configuration = Get-Content (Join-Path $workspace 'admin/club/craftmaster.ini') -Raw
 $pythonDirectory = Split-Path (Get-Command python).Source
@@ -96,7 +98,7 @@ try {
     if ($installation.ExitCode -ne 0) { throw "Installer failed with exit code $($installation.ExitCode)." }
     $application = Join-Path $smoke 'bin/nextcloud.exe'
     if (!(Test-Path $application)) { throw 'Installed application is missing.' }
-    if ((Get-Item $application).VersionInfo.FileVersion -notmatch '^35\.0\.0\.') { throw 'Installed client version is incorrect.' }
+    if ((Get-Item $application).VersionInfo.FileVersion -notmatch ('^' + [regex]::Escape($version) + '\.')) { throw 'Installed client version is incorrect.' }
     foreach ($name in @('nextcloud.exe', 'nextcloudsync.dll', 'nextcloud_csync.dll')) {
         $installedFile = Join-Path $smoke "bin/$name"
         $builtFile = Join-Path $build "bin/$name"
@@ -129,7 +131,7 @@ try {
     Assert-Source
     $artifacts = Join-Path $workspace 'artifacts'
     New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
-    Copy-Item $installers[0].FullName (Join-Path $artifacts "Nextcloud-35.0.0-$suffix-windows-x64.exe")
+    Copy-Item $installers[0].FullName (Join-Path $artifacts "Nextcloud-$version-$suffix-windows-x64.exe")
 } finally {
     Pop-Location
 }

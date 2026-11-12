@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag (v35.0.0-sairibus.1)
+        description: Release tag, v<VERSION.cmake version>-sairibus.<n>
         required: true
         type: string
 
@@ -26,6 +26,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       suffix: ${{ steps.source.outputs.suffix }}
+      version: ${{ steps.source.outputs.version }}
+      upstream_base: ${{ steps.upstream.outputs.base }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,6 +42,16 @@ jobs:
           export TAG_REFS="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG")"
           python3 admin/club/release.py validate
           python3 -m unittest discover -s admin/club/tests -v
+      - name: Find the upstream base
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_BRANCH: ${{ steps.source.outputs.upstream_branch }}
+        run: |
+          set -euo pipefail
+          base="$(gh api "repos/$GITHUB_REPOSITORY/compare/nextcloud:desktop:$UPSTREAM_BRANCH...$GITHUB_SHA" --jq .merge_base_commit.sha)"
+          [[ "$base" =~ ^[0-9a-f]{40}$ ]]
+          echo "base=$base" >> "$GITHUB_OUTPUT"
 
   windows:
     needs: validate
@@ -48,6 +60,7 @@ jobs:
     env:
       MAIN_SHA: ${{ github.sha }}
       CLUB_VERSION_SUFFIX: ${{ needs.validate.outputs.suffix }}
+      UPSTREAM_BASE: ${{ needs.validate.outputs.upstream_base }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,7 +78,7 @@ jobs:
         with:
           name: windows-x64
           path: |
-            artifacts/Nextcloud-35.0.0-${{ needs.validate.outputs.suffix }}-windows-x64.exe
+            artifacts/Nextcloud-${{ needs.validate.outputs.version }}-${{ needs.validate.outputs.suffix }}-windows-x64.exe
             artifacts/build-info.json
             artifacts/SHA256SUMS
           if-no-files-found: error
@@ -101,11 +114,11 @@ jobs:
           info = json.loads(Path('artifacts/build-info.json').read_text())
           assert info['source_commit'] == os.environ['GITHUB_SHA']
           assert info['release_tag'] == os.environ['RELEASE_TAG']
-          notes = f"""Unofficial Nextcloud Desktop 35.0.0 with Cloudflare Access browser sign-in.
+          notes = f"""Unofficial Nextcloud Desktop {info['client_version']} with Cloudflare Access browser sign-in.
 
           Windows x64 installer. The installer is unsigned. Automatic updates from the official Nextcloud channel are disabled.
 
-          Source commit: `{info['source_commit']}`. Upstream stable-35.0 base: `{info['upstream_base']}`. Thirteen focused client test suites passed on the GitHub Windows runner. A silent installation check verified the executable and sync libraries against the tested build, plus the Start Menu launcher target. GUI startup and synchronization with the production server have not been tested by this workflow.
+          Source commit: `{info['source_commit']}`. Upstream {info['upstream_branch']} base: `{info['upstream_base']}`. Thirteen focused client test suites passed on the GitHub Windows runner. A silent installation check verified the executable and sync libraries against the tested build, plus the Start Menu launcher target. GUI startup and synchronization with the production server have not been tested by this workflow.
 
           Enter https://nc.sairibus.com in the account wizard, sign in with your 再バ同アカウント in the browser, and approve the device in Nextcloud. No Client ID, Client Secret or WARP is needed. The installer includes cloudflared built from pinned source with a login retry patch and a pinned Go toolchain. Temporary discovery and token-transfer failures retry within the five-minute sign-in window. Server-side eligibility and device authorization apply. Renew an expired session under Settings → Advanced → Browser sign-in. macOS File Provider is unsupported.
 
