@@ -57,6 +57,8 @@ class OWNCLOUDSYNC_EXPORT Theme : public QObject
 #ifndef TOKEN_AUTH_ONLY
     Q_PROPERTY(QColor wizardHeaderTitleColor READ wizardHeaderTitleColor CONSTANT)
     Q_PROPERTY(QColor wizardHeaderBackgroundColor READ wizardHeaderBackgroundColor CONSTANT)
+    Q_PROPERTY(bool wizardHideSelfHostButton READ wizardHideSelfHostButton CONSTANT)
+    Q_PROPERTY(bool wizardHideSignupButton READ wizardHideSignupButton CONSTANT)
 #endif
     Q_PROPERTY(QString updateCheckUrl READ updateCheckUrl CONSTANT)
 
@@ -399,8 +401,9 @@ public:
     [[nodiscard]] QString updateCheckUrl() const;
 
     /**
-     * When true, the setup wizard will show the selective sync dialog by default and default
-     * to nothing selected
+     * @brief Whether the setup wizard shows the selective sync dialog with no folders selected.
+     *
+     * The value is read from the wizardSelectiveSyncDefaultNothing configuration parameter.
      */
     [[nodiscard]] bool wizardSelectiveSyncDefaultNothing() const;
 
@@ -421,6 +424,11 @@ public:
      * in the account wizard
      */
     [[nodiscard]] bool wizardHideExternalStorageConfirmationCheckbox() const;
+
+    [[nodiscard]] bool wizardHideSelfHostButton() const;
+    [[nodiscard]] bool wizardHideSignupButton() const;
+    [[nodiscard]] QUrl wizardSignupUrl() const;
+    [[nodiscard]] static QUrl signupUrlForBranding(const QString &configuredUrl);
 
     /**
      * @brief Sharing options

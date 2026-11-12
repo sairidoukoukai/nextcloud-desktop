@@ -7,13 +7,16 @@
 #include "cloudflarebrowsertestutils.h"
 #include "accessmanager.h"
 #include "account.h"
+#include "accountmanager.h"
 #include "cloudflareaccess.h"
 #include "cloudflareaccesssettingscontroller.h"
 #include "cloudflareaccesstestserver.h"
+#include "config.h"
 #include "configfile.h"
 #include "folder.h"
 #include "gui/creds/flow2auth.h"
 #include "gui/localnetworkpermission.h"
+#include "gui/selectivesyncdialog.h"
 #include "gui/wizard/accountwizardcontroller.h"
 #include "httplogger.h"
 #include "managedsettingstestutils.h"
@@ -25,7 +28,9 @@
 #include "gui/macOS/fileprovider.h"
 #endif
 
+#include <QDesktopServices>
 #include <QDialog>
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkReply>
@@ -38,6 +43,11 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+
+#include <openssl/pem.h>
+#include <openssl/pkcs12.h>
+
+#include <memory>
 
 using namespace OCC;
 using namespace Qt::StringLiterals;
@@ -75,6 +85,22 @@ public:
     {
         controller._account = Account::create();
         controller._account->setUrl(url);
+    }
+
+    static void setAccount(AccountWizardController &controller, const AccountPtr &account)
+    {
+        controller._account = account;
+        controller._remoteFolder.clear();
+    }
+
+    static SelectiveSyncDialog *selectiveSyncDialog(const AccountWizardController &controller)
+    {
+        return controller._selectiveSyncDialog;
+    }
+
+    static QStringList selectiveSyncBlacklist(const AccountWizardController &controller)
+    {
+        return controller._selectiveSyncBlacklist;
     }
 
     static void setSyncMode(AccountWizardController &controller, AccountWizardController::SyncMode mode)
@@ -116,13 +142,86 @@ public:
     {
         controller.setCurrentStep(step);
     }
+
+    static void initialiseLocalSyncFolder(AccountWizardController &controller)
+    {
+        controller.initialiseLocalSyncFolder();
+    }
+
+    static void loadClientCertificateFile(AccountWizardController &controller, const QString &path)
+    {
+        controller.loadClientCertificateFile(QUrl::fromLocalFile(path));
+    }
 };
+
+}
+
+namespace {
+
+// Qt cannot write PKCS#12, so build one from the e2e test certificate and key.
+bool writeTestPkcs12(const QString &path, const char *password)
+{
+    QFile certFile(u"e2etestsfakecert.pem"_s);
+    QFile keyFile(u"e2etestsfakecertprivatekey.pem"_s);
+    if (!certFile.open(QFile::ReadOnly) || !keyFile.open(QFile::ReadOnly)) {
+        return false;
+    }
+    const auto certPem = certFile.readAll();
+    const auto keyPem = keyFile.readAll();
+    const std::unique_ptr<BIO, decltype(&BIO_free)> certBio(BIO_new_mem_buf(certPem.constData(), static_cast<int>(certPem.size())), BIO_free);
+    const std::unique_ptr<BIO, decltype(&BIO_free)> keyBio(BIO_new_mem_buf(keyPem.constData(), static_cast<int>(keyPem.size())), BIO_free);
+    const std::unique_ptr<X509, decltype(&X509_free)> cert(PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr), X509_free);
+    const std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr), EVP_PKEY_free);
+    const std::unique_ptr<PKCS12, decltype(&PKCS12_free)> pkcs12(
+        PKCS12_create(password, "test", key.get(), cert.get(), nullptr, NID_aes_256_cbc, NID_aes_256_cbc, 0, 0, 0), PKCS12_free);
+    unsigned char *der = nullptr;
+    const auto length = pkcs12 ? i2d_PKCS12(pkcs12.get(), &der) : 0;
+    const QByteArray data(reinterpret_cast<const char *>(der), qMax(length, 0));
+    OPENSSL_free(der);
+
+    QFile file(path);
+    return !data.isEmpty() && file.open(QFile::WriteOnly) && file.write(data) == data.size();
+}
 
 }
 
 class TestAccountWizardController : public QObject
 {
     Q_OBJECT
+
+Q_SIGNALS:
+    void signupUrlRequested(const QUrl &url);
+
+private:
+    [[nodiscard]] static auto restoreOverrideState()
+    {
+        ConfigFile().clearOverrideServerUrl();
+        ConfigFile().clearOverrideLocalDir();
+        auto theme = Theme::instance();
+        const auto previousOverrideServerUrl = theme->overrideServerUrl();
+        const auto previousForceOverrideServerUrl = theme->forceOverrideServerUrl();
+        const auto previousStartLoginFlowAutomatically = theme->startLoginFlowAutomatically();
+        theme->setOverrideServerUrl({});
+        // Builds enable APPLICATION_SERVER_URL_ENFORCE by default.
+        theme->setForceOverrideServerUrl(true);
+        theme->setStartLoginFlowAutomatically(false);
+        return qScopeGuard([theme, previousOverrideServerUrl, previousForceOverrideServerUrl, previousStartLoginFlowAutomatically] {
+            ConfigFile().clearOverrideServerUrl();
+            ConfigFile().clearOverrideLocalDir();
+            theme->setOverrideServerUrl(previousOverrideServerUrl);
+            theme->setForceOverrideServerUrl(previousForceOverrideServerUrl);
+            theme->setStartLoginFlowAutomatically(previousStartLoginFlowAutomatically);
+        });
+    }
+
+    static void setManagedOverrideServerUrl(SettingSourceType type, EnforcementState enforcement, int priority)
+    {
+        ConfigFile::setDeviceSourcesFactory([type, enforcement, priority] {
+            std::vector<std::unique_ptr<SettingSource>> sources;
+            sources.push_back(std::make_unique<MapSource>(type, enforcement, priority, QVariantMap{{u"overrideServerUrl"_s, u"https://cloud.example"_s}}));
+            return sources;
+        });
+    }
 
 private Q_SLOTS:
     void browserWizardStartsAndResumesAfterCentralLogin()
@@ -773,6 +872,98 @@ private Q_SLOTS:
         QVERIFY(controller.localSyncFolderRequired());
     }
 
+    void defaultSelectiveSyncSelection_data()
+    {
+        QTest::addColumn<bool>("defaultNothing");
+        QTest::addColumn<bool>("acceptSelection");
+        QTest::addColumn<bool>("selectEverything");
+        QTest::addColumn<bool>("listingFails");
+
+        QTest::newRow("cancel-default-nothing") << true << false << false << false;
+        QTest::newRow("accept-default-nothing") << true << true << false << false;
+        QTest::newRow("select-everything") << true << true << true << false;
+        QTest::newRow("default-everything") << false << true << false << false;
+        QTest::newRow("cancel-after-listing-error") << true << false << false << true;
+    }
+
+    void defaultSelectiveSyncSelection()
+    {
+        QFETCH(bool, defaultNothing);
+        QFETCH(bool, acceptSelection);
+        QFETCH(bool, selectEverything);
+        QFETCH(bool, listingFails);
+        const auto restoreTheme = restoreOverrideState();
+        ConfigFile::setDeviceSourcesFactory([defaultNothing] {
+            std::vector<std::unique_ptr<SettingSource>> sources;
+            sources.push_back(
+                std::make_unique<MapSource>(SettingSourceType::PlatformPolicy,
+                                            EnforcementState::Enforced,
+                                            200,
+                                            QVariantMap{{u"wizardSelectiveSyncDefaultNothing"_s, defaultNothing}, {u"virtualFilesMode"_s, u"off"_s}}));
+            return sources;
+        });
+        auto fakeFolder = FakeFolder{FileInfo::A12_B12_C12_S12(), {}, {}, false};
+        if (listingFails) {
+            fakeFolder.serverErrorPaths().append({}, 503);
+        }
+        auto listingFailed = false;
+        AccountWizardController controller;
+        connect(fakeFolder.networkAccessManager(), &QNetworkAccessManager::finished, &controller, [&listingFailed](QNetworkReply *reply) {
+            listingFailed = reply->error() != QNetworkReply::NoError;
+        });
+        AccountWizardControllerTestAccess::setAccount(controller, fakeFolder.account());
+        AccountWizardControllerTestAccess::setLocalSyncFolderPicker(controller, [](const QString &, const QString &, const auto &completion) {
+            completion({}, {});
+        });
+        const auto closeDialog = qScopeGuard([&controller] {
+            delete AccountWizardControllerTestAccess::selectiveSyncDialog(controller);
+        });
+        controller.setSyncMode(AccountWizardController::SyncEverything);
+        AccountWizardControllerTestAccess::chooseSyncModeAfterCapabilities(controller);
+        if (!defaultNothing) {
+            QCOMPARE(controller.syncMode(), AccountWizardController::SyncEverything);
+            QVERIFY(!AccountWizardControllerTestAccess::selectiveSyncDialog(controller));
+            controller.openSelectiveSync();
+        }
+        QTRY_VERIFY(AccountWizardControllerTestAccess::selectiveSyncDialog(controller));
+        auto dialog = AccountWizardControllerTestAccess::selectiveSyncDialog(controller);
+        QCOMPARE(controller.syncMode(), AccountWizardController::SelectiveSync);
+        QVERIFY(AccountWizardControllerTestAccess::selectiveSyncBlacklist(controller).isEmpty());
+
+        const auto excludedFolders = QStringList{u"A/"_s, u"B/"_s, u"C/"_s, u"S/"_s};
+        if (listingFails) {
+            QTRY_VERIFY(listingFailed);
+        } else {
+            const auto tree = dialog->findChild<QTreeWidget *>();
+            QVERIFY(tree);
+            QTRY_COMPARE(tree->topLevelItemCount(), 1);
+            QTRY_COMPARE(tree->topLevelItem(0)->childCount(), 4);
+            QCOMPARE(dialog->createBlackList(), defaultNothing ? excludedFolders : QStringList{});
+            if (selectEverything) {
+                tree->topLevelItem(0)->setCheckState(0, Qt::Checked);
+            }
+        }
+        if (acceptSelection) {
+            dialog->accept();
+        } else {
+            dialog->reject();
+        }
+        const auto keepsExclusions = defaultNothing && acceptSelection && !selectEverything;
+        const auto expectedBlacklist = keepsExclusions ? excludedFolders : QStringList{};
+        QCOMPARE(controller.syncMode(), keepsExclusions ? AccountWizardController::SelectiveSync : AccountWizardController::SyncEverything);
+        QCOMPARE(AccountWizardControllerTestAccess::selectiveSyncBlacklist(controller), expectedBlacklist);
+        QTRY_VERIFY(!AccountWizardControllerTestAccess::selectiveSyncDialog(controller));
+
+        controller.openSelectiveSync();
+        dialog = AccountWizardControllerTestAccess::selectiveSyncDialog(controller);
+        QVERIFY(dialog);
+        QCOMPARE(dialog->oldBlackList(), expectedBlacklist);
+        dialog->reject();
+        QCOMPARE(AccountWizardControllerTestAccess::selectiveSyncBlacklist(controller), expectedBlacklist);
+        controller.setSyncMode(AccountWizardController::SyncEverything);
+        QVERIFY(AccountWizardControllerTestAccess::selectiveSyncBlacklist(controller).isEmpty());
+    }
+
     void normalizesCommonServerUrlSuffixes()
     {
         QCOMPARE(AccountWizardController::normalizeServerUrlInput(QStringLiteral(" https://cloud.example/index.php ")),
@@ -1065,6 +1256,24 @@ private Q_SLOTS:
         QCOMPARE(externalSpy.count(), 1);
     }
 
+    void opensConfiguredSignupUrlInBrowser()
+    {
+        QDesktopServices::setUrlHandler(u"http"_s, this, "signupUrlRequested");
+        QDesktopServices::setUrlHandler(u"https"_s, this, "signupUrlRequested");
+        const auto resetUrlHandlers = qScopeGuard([] {
+            QDesktopServices::unsetUrlHandler(u"http"_s);
+            QDesktopServices::unsetUrlHandler(u"https"_s);
+        });
+        QSignalSpy browserSpy(this, &TestAccountWizardController::signupUrlRequested);
+        QVERIFY(browserSpy.isValid());
+
+        AccountWizardController controller;
+        controller.openSignup();
+
+        QCOMPARE(browserSpy.count(), 1);
+        QCOMPARE(browserSpy.constFirst().constFirst().toUrl(), Theme::instance()->wizardSignupUrl());
+    }
+
     void exposesProxySettingsAvailability()
     {
         AccountWizardController controller;
@@ -1129,6 +1338,166 @@ private Q_SLOTS:
         QCOMPARE(controller.serverUrl(), QStringLiteral("https://cloud.example"));
         QVERIFY(!controller.serverUrlEditable());
         QVERIFY(controller.startLoginFlowAutomatically());
+    }
+
+    void prefillsServerUrlFromManagedDefault()
+    {
+        const auto restoreConfiguration = restoreOverrideState();
+        setManagedOverrideServerUrl(SettingSourceType::PlatformDefault, EnforcementState::NotEnforced, 20);
+
+        AccountWizardController controller;
+
+        QCOMPARE(controller.serverUrl(), u"https://cloud.example"_s);
+#if defined(APPLICATION_SERVER_URL) && defined(APPLICATION_SERVER_URL_ENFORCE)
+        QVERIFY(!controller.serverUrlEditable());
+        QVERIFY(Theme::instance()->forceOverrideServerUrl());
+#else
+        QVERIFY(controller.serverUrlEditable());
+        QVERIFY(!Theme::instance()->forceOverrideServerUrl());
+#endif
+        QVERIFY(!controller.startLoginFlowAutomatically());
+    }
+
+    void locksServerUrlFromManagedPolicy()
+    {
+        const auto restoreConfiguration = restoreOverrideState();
+        setManagedOverrideServerUrl(SettingSourceType::PlatformPolicy, EnforcementState::Enforced, 200);
+
+        AccountWizardController controller;
+
+        QCOMPARE(controller.serverUrl(), u"https://cloud.example"_s);
+        QVERIFY(!controller.serverUrlEditable());
+        QVERIFY(controller.startLoginFlowAutomatically());
+    }
+
+    void appliesOverrideLocalDirForNewAccount_data()
+    {
+        QTest::addColumn<QString>("source");
+        QTest::addColumn<bool>("existingAccount");
+        QTest::addColumn<bool>("applies");
+        QTest::addColumn<bool>("showsSyncOptions");
+
+        QTest::newRow("policy, first account") << u"policy"_s << false << true << false;
+        QTest::newRow("policy, additional account") << u"policy"_s << true << false << true;
+        QTest::newRow("device default, first account") << u"default"_s << false << true << true;
+        QTest::newRow("device default, additional account") << u"default"_s << true << false << true;
+        QTest::newRow("command line, additional account") << u"commandLine"_s << true << true << false;
+    }
+
+    void appliesOverrideLocalDirForNewAccount()
+    {
+        QFETCH(QString, source);
+        QFETCH(bool, existingAccount);
+        QFETCH(bool, applies);
+        QFETCH(bool, showsSyncOptions);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const auto restoreConfiguration = restoreOverrideState();
+        ConfigFile::setDeviceSourcesFactory([source, localDir = dir.path()] {
+            auto policyValues = QVariantMap{{u"overrideServerUrl"_s, u"https://cloud.example"_s}};
+            if (source == u"policy"_s) {
+                policyValues.insert(u"overrideLocalDir"_s, localDir);
+            }
+            std::vector<std::unique_ptr<SettingSource>> sources;
+            sources.push_back(std::make_unique<MapSource>(SettingSourceType::PlatformPolicy, EnforcementState::Enforced, 200, policyValues));
+            if (source == u"default"_s) {
+                sources.push_back(std::make_unique<MapSource>(SettingSourceType::PlatformDefault,
+                                                              EnforcementState::NotEnforced,
+                                                              20,
+                                                              QVariantMap{{u"overrideLocalDir"_s, localDir}}));
+            }
+            return sources;
+        });
+        if (source == u"commandLine"_s) {
+            QVERIFY(ConfigFile().setOverrideLocalDir(dir.path()));
+        }
+
+        AccountState *accountState = nullptr;
+        const auto removeAccount = qScopeGuard([&accountState] {
+            if (accountState) {
+                AccountManager::instance()->removeAccountState(accountState);
+            }
+        });
+        if (existingAccount) {
+            auto account = Account::create();
+            account->setUrl(QUrl(u"https://cloud.example"_s));
+            account->setDavUser(u"first"_s);
+            account->setCredentials(new FakeCredentials{new FakeQNAM({})});
+            accountState = AccountManager::instance()->addAccount(account);
+        }
+
+        AccountWizardController controller;
+        AccountWizardControllerTestAccess::setAccountUrl(controller, QUrl(u"https://cloud.example"_s));
+        AccountWizardControllerTestAccess::initialiseLocalSyncFolder(controller);
+
+        QCOMPARE(AccountWizardControllerTestAccess::localSyncFolderOverride(controller), applies);
+        QCOMPARE(controller.localSyncFolder() == QDir::fromNativeSeparators(dir.path()), applies);
+
+        AccountWizardControllerTestAccess::chooseSyncModeAfterCapabilities(controller);
+        if (!controller.needsSyncOptions()) {
+            QSKIP("This build chooses no sync options, so the wizard always finishes.");
+        }
+        QCOMPARE(controller.currentStep() == AccountWizardController::SyncOptionsStep, showsSyncOptions);
+    }
+
+    void unusableClientCertificateFileIsRejectedWhenChosen()
+    {
+        QFETCH(bool, createEmptyFile);
+        QFETCH(QString, error);
+        QTemporaryDir dir;
+        const auto path = dir.filePath(u"client.p12"_s);
+        if (createEmptyFile) {
+            QFile file(path);
+            QVERIFY(file.open(QFile::WriteOnly));
+        }
+        AccountWizardController controller;
+
+        AccountWizardControllerTestAccess::loadClientCertificateFile(controller, path);
+
+        QCOMPARE(controller.clientCertificateError(), error);
+        QVERIFY(!controller.clientCertificateValid());
+    }
+
+    void unusableClientCertificateFileIsRejectedWhenChosen_data()
+    {
+        QTest::addColumn<bool>("createEmptyFile");
+        QTest::addColumn<QString>("error");
+        QTest::newRow("missing") << false << u"Could not access the selected certificate file."_s;
+        QTest::newRow("empty") << true << u"The selected certificate file is empty."_s;
+    }
+
+    // Regression: the bundle is read when chosen, so submitting must not need the file again.
+    void submittingClientCertificateDoesNotReopenTheFile()
+    {
+        QTemporaryDir dir;
+        const auto path = dir.filePath(u"client.p12"_s);
+        QVERIFY(writeTestPkcs12(path, "secret"));
+        AccountWizardController controller;
+        AccountWizardControllerTestAccess::setAccountUrl(controller, QUrl(u"https://cloud.example"_s));
+        AccountWizardControllerTestAccess::loadClientCertificateFile(controller, path);
+        QVERIFY(QFile::remove(path));
+
+        controller.setClientCertificatePassword(u"secret"_s);
+
+        QVERIFY(controller.submitClientCertificate());
+        QVERIFY(controller.clientCertificateError().isEmpty());
+    }
+
+    void submittingClientCertificateWithWrongPasswordKeepsTheSelection()
+    {
+        QTemporaryDir dir;
+        const auto path = dir.filePath(u"client.p12"_s);
+        QVERIFY(writeTestPkcs12(path, "secret"));
+        AccountWizardController controller;
+        AccountWizardControllerTestAccess::setAccountUrl(controller, QUrl(u"https://cloud.example"_s));
+        AccountWizardControllerTestAccess::loadClientCertificateFile(controller, path);
+
+        controller.setClientCertificatePassword(u"wrong"_s);
+
+        QVERIFY(!controller.submitClientCertificate());
+        QCOMPARE(controller.clientCertificateError(), u"Could not load certificate. Maybe wrong password?"_s);
+        QVERIFY(controller.clientCertificateValid());
     }
 
 #ifdef Q_OS_LINUX

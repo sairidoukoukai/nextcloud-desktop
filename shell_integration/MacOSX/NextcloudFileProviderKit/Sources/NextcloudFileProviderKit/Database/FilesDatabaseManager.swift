@@ -39,6 +39,9 @@ public final class FilesDatabaseManager: Sendable {
         ncDatabase().objects(RealmItemMetadata.self)
     }
 
+    /// Downloads of this domain which the system has not yet reported as materialized, kept here because one process can host several domains and each has its own manager.
+    let pendingMaterializations = PendingMaterializationRegistry()
+
     ///
     /// Convenience initializer which defines a default configuration for Realm.
     ///
@@ -566,6 +569,31 @@ public final class FilesDatabaseManager: Sendable {
         }
     }
 
+    /// Set the given `downloaded` and `visitedDirectory` values of several rows in one write transaction, leaving every other column and every missing row untouched; a failure discards the whole batch.
+    func setMaterializationStates(_ states: [(ocId: String, downloaded: Bool?, visitedDirectory: Bool?)]) {
+        guard !states.isEmpty else { return }
+
+        let database = ncDatabase()
+
+        do {
+            try database.write {
+                for state in states {
+                    guard let item = database.object(ofType: RealmItemMetadata.self, forPrimaryKey: state.ocId) else { continue }
+
+                    if let downloaded = state.downloaded {
+                        item.downloaded = downloaded
+                    }
+
+                    if let visitedDirectory = state.visitedDirectory {
+                        item.visitedDirectory = visitedDirectory
+                    }
+                }
+            }
+        } catch {
+            logger.error("Failed to update the materialization state of item metadata records.", [.error: error])
+        }
+    }
+
     /**
      * @brief Records that the provider returned `.excludedFromSync` for an item.
      *
@@ -666,6 +694,17 @@ public final class FilesDatabaseManager: Sendable {
             toWrite.lockToken = existing.lockToken
             if toWrite.etag == existing.etag {
                 toWrite.fileProviderContentVersion = existing.fileProviderContentVersion
+            }
+
+            // Skip a `normal` row whose remote state is unchanged, and also compare location and `deleted` because this row was found by `ocId` alone, and `visitedDirectory` because it is local-only. Rows that are not `normal` are always written, which resets them.
+            if !existing.deleted,
+               existing.status == Status.normal.rawValue,
+               existing.hasSameLocation(as: toWrite),
+               existing.isInSameDatabaseStoreableRemoteState(toWrite),
+               existing.visitedDirectory == toWrite.visitedDirectory
+            {
+                logger.debug("Skipping item metadata write; database already holds this remote state.", [.item: toWrite.ocId, .name: toWrite.fileName])
+                return toWrite
             }
         } else {
             // The ocId lookup missed. Before falling back to defaults from the
