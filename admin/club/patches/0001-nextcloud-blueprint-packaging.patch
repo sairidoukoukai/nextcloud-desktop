@@ -1,8 +1,17 @@
 SPDX-FileCopyrightText: 2026 Sairibus contributors
 SPDX-License-Identifier: BSD-2-Clause
 
-Repair the pinned Windows packaging recipe: import os and define its launcher.
+Package the pinned recipe as Sairibus Nextcloud: import os, name the product,
+publisher and launcher, and keep the renamed executables.
 
+--- a/nextcloud-client/blacklist.txt
++++ b/nextcloud-client/blacklist.txt
+@@ -36,4 +36,4 @@ bin/qt\.conf
+ bin/syncqt\.pl
+ 
+ # strip most executables
+-bin/(?!(nextcloud|nextcloudcmd|QtWebEngineProcess)).*\.exe
++bin/(?!(sairibusnextcloud|sairibusnextcloudcmd|nextcloud-cloudflared|QtWebEngineProcess)).*\.exe
 --- a/nextcloud-client/nextcloud-client.py
 +++ b/nextcloud-client/nextcloud-client.py
 @@ -2,6 +2,7 @@
@@ -13,11 +22,30 @@ Repair the pinned Windows packaging recipe: import os and define its launcher.
  from Package.CMakePackageBase import *
  
  class subinfo(info.infoclass):
-@@ -85,6 +86,7 @@
+@@ -20,9 +21,9 @@ class subinfo(info.infoclass):
+     def setTargets(self):
+         self.svnTargets["master"] = "[git]https://github.com/nextcloud/desktop"
+ 
+-        self.description = "Nextcloud Desktop Client"
+-        self.displayName = "Nextcloud"
+-        self.webpage = "https://nextcloud.com"
++        self.description = "Sairibus Nextcloud Desktop Client"
++        self.displayName = "Sairibus Nextcloud"
++        self.webpage = "https://github.com/sairidoukoukai/nextcloud-desktop"
+ 
+         self.defaultTarget = "master"
+ 
+@@ -83,9 +84,10 @@ class Package(CMakePackageBase):
+ 
+     def createPackage(self):
          self.blacklist_file.append(os.path.join(self.packageDir(), 'blacklist.txt'))
-         self.defines["appname"] = "nextcloud"
-         self.defines["company"] = "Nextcloud GmbH"
-+        self.defines["executable"] = "bin/nextcloud.exe"
-         self.applicationExecutable = "nextcloud"
+-        self.defines["appname"] = "nextcloud"
+-        self.defines["company"] = "Nextcloud GmbH"
+-        self.applicationExecutable = "nextcloud"
++        self.defines["appname"] = "sairibusnextcloud"
++        self.defines["company"] = "Sairibus"
++        self.defines["executable"] = "bin/sairibusnextcloud.exe"
++        self.applicationExecutable = "sairibusnextcloud"
  
          self.ignoredPackages += ["binary/mysql"]
+         if not CraftCore.compiler.isLinux:

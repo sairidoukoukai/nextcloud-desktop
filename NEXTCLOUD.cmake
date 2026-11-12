@@ -10,15 +10,16 @@ if(NEXTCLOUD_DEV)
     set( APPLICATION_EXECUTABLE "nextclouddev" )
     set( APPLICATION_ICON_NAME  "Nextcloud" )
 else()
-    set( APPLICATION_NAME       "Nextcloud" )
-    set( APPLICATION_SHORTNAME  "Nextcloud" )
-    set( APPLICATION_EXECUTABLE "nextcloud" )
-    set( APPLICATION_ICON_NAME  "${APPLICATION_SHORTNAME}" )
+    # Sairibus build: its own identity so it installs and runs next to the official client.
+    set( APPLICATION_NAME       "Sairibus Nextcloud" )
+    set( APPLICATION_SHORTNAME  "SairibusNextcloud" )
+    set( APPLICATION_EXECUTABLE "sairibusnextcloud" )
+    set( APPLICATION_ICON_NAME  "Nextcloud" )
 endif()
 
 set( APPLICATION_CONFIG_NAME "${APPLICATION_EXECUTABLE}" )
 set( APPLICATION_DOMAIN     "nextcloud.com" )
-set( APPLICATION_VENDOR     "Nextcloud GmbH" )
+set( APPLICATION_VENDOR     "Sairibus" )
 set( APPLICATION_UPDATE_URL "https://updates.nextcloud.org/client/" CACHE STRING "URL for updater" )
 set( APPLICATION_HELP_URL   "" CACHE STRING "URL for the help menu" )
 
@@ -113,6 +114,9 @@ option( DO_NOT_USE_PROXY "Do not use system wide proxy, instead always do a dire
 
 option( WIN_DISABLE_USERNAME_PREFILL "Do not prefill the Windows user name when creating a new account" OFF )
 
+# Never import accounts or sync folders from an official client's configuration.
+option( DISABLE_ACCOUNT_MIGRATION "Exclude legacy account migration and import" ON )
+
 ## Theming options
 set(NEXTCLOUD_BACKGROUND_COLOR "#0082c9" CACHE STRING "Default Nextcloud background color")
 set( APPLICATION_WIZARD_HEADER_BACKGROUND_COLOR ${NEXTCLOUD_BACKGROUND_COLOR} CACHE STRING "Hex color of the wizard header background")
@@ -124,17 +128,22 @@ option( APPLICATION_WIZARD_USE_CUSTOM_LOGO "Use the logo from ':/client/theme/co
 #
 if(WIN32)
     # Context Menu
-    set( WIN_SHELLEXT_CONTEXT_MENU_GUID      "{BC6988AB-ACE2-4B81-84DC-DC34F9B24401}" )
+    set( WIN_SHELLEXT_CONTEXT_MENU_GUID      "{239F080E-48B7-4555-9F6B-03E16329A5F4}" )
 
     # Overlays
-    set( WIN_SHELLEXT_OVERLAY_GUID_ERROR     "{E0342B74-7593-4C70-9D61-22F294AAFE05}" )
-    set( WIN_SHELLEXT_OVERLAY_GUID_OK        "{E1094E94-BE93-4EA2-9639-8475C68F3886}" )
-    set( WIN_SHELLEXT_OVERLAY_GUID_OK_SHARED "{E243AD85-F71B-496B-B17E-B8091CBE93D2}" )
-    set( WIN_SHELLEXT_OVERLAY_GUID_SYNC      "{E3D6DB20-1D83-4829-B5C9-941B31C0C35A}" )
-    set( WIN_SHELLEXT_OVERLAY_GUID_WARNING   "{E4977F33-F93A-4A0A-9D3C-83DEA0EE8483}" )
+    set( WIN_SHELLEXT_OVERLAY_GUID_ERROR     "{837DF48B-3B6E-42BA-B9A6-96B266093A3D}" )
+    set( WIN_SHELLEXT_OVERLAY_GUID_OK        "{6A8A7C69-6ABD-4B8E-9AE1-70C2277822A9}" )
+    set( WIN_SHELLEXT_OVERLAY_GUID_OK_SHARED "{75ECECE4-21F9-491A-AE25-4ED9662D28E7}" )
+    set( WIN_SHELLEXT_OVERLAY_GUID_SYNC      "{E167F40C-D3CB-4564-9459-42BA8D8E60CA}" )
+    set( WIN_SHELLEXT_OVERLAY_GUID_WARNING   "{8E7705F0-E440-40CF-AE2E-ED6D91B06426}" )
+
+    # Virtual files (CfAPI) shell extensions
+    set( CFAPI_SHELLEXT_APPID_REG                     "{99FBEA6D-8AC5-42F2-A7D5-0A5697786F11}" )
+    set( CFAPI_SHELLEXT_CUSTOM_STATE_HANDLER_CLASS_ID "C9E732CF-0F1F-49E2-ACB6-9122366CC2FE" )
+    set( CFAPI_SHELLEXT_THUMBNAIL_HANDLER_CLASS_ID    "E618C512-5295-4D37-8313-6EB7EC675606" )
 
     # MSI Upgrade Code (without brackets)
-    set( WIN_MSI_UPGRADE_CODE                "FD2FCCA9-BB8F-4485-8F70-A0621B84A7F4" )
+    set( WIN_MSI_UPGRADE_CODE                "B7247D4A-CADD-4A9A-909B-D7E0890CD0E8" )
 
     # Windows build options
     option( BUILD_WIN_MSI "Build MSI scripts and helper DLL" OFF )

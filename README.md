@@ -11,7 +11,7 @@ An unofficial fork maintained by 再履バス同好会 (Sairibus), based on Next
 
 ## Install and connect
 
-Releases target Windows x64. Installers are unsigned. This fork disables the official automatic updater; install subsequent releases from this repository.
+Releases target Windows x64. Installers are unsigned. This fork disables the official automatic updater; install subsequent releases from this repository. The client installs as **Sairibus Nextcloud** with its own program folder, settings, credentials and Explorer integration, so it runs next to the official Nextcloud client. It never imports accounts or sync folders from the official client. Releases up to `v35.0.0-sairibus.4` installed as Nextcloud; uninstall them first.
 
 1. Enter **https://nc.sairibus.com** in the account wizard and continue.
 2. Sign in with your **再バ同アカウント** in the browser using a passkey or email code.
@@ -35,9 +35,9 @@ macOS File Provider is unsupported. This release provides a Windows x64 installe
 
 The [Windows build script](admin/club/build-windows.ps1) uses pinned Craft, CraftMaster and blueprint commits from the [build configuration](admin/club/craftmaster.ini). It builds the client, runs thirteen focused test suites, packages an installer, and checks a silent installation in the disposable runner.
 
-A [small patch](admin/club/patches/0001-nextcloud-blueprint-packaging.patch) repairs the pinned recipe's missing Python import and Start Menu launcher. The build checks the recipe revision and clean tree before applying it. `build-info.json` records the patch checksum.
+A [small patch](admin/club/patches/0001-nextcloud-blueprint-packaging.patch) repairs the pinned recipe's missing Python import and Start Menu launcher, and packages the client under the Sairibus Nextcloud name. The build checks the recipe revision and clean tree before applying it. `build-info.json` records the patch checksum.
 
-The installation check uses NSIS's explicit all-users mode on a fresh 64-bit runner. It compares the installed executable and sync libraries with the tested build and checks the Start Menu shortcut's target.
+The installation check uses NSIS's explicit all-users mode on a fresh 64-bit runner. It compares the installed executable and sync libraries with the tested build, checks the Start Menu shortcut's target, and fails if the installer registers the official `Nextcloud` uninstall entry or writes to `Program Files\Nextcloud`.
 
 **Sairibus CI** runs on every pull request and every push to `main`: the release-script tests and the Windows build, test suites and installation check used for releases. Each run keeps its installer as a workflow artifact for seven days. Branch protection for `main` should require the **Windows build** and **Release script tests** checks.
 

@@ -86,18 +86,20 @@ try {
     Invoke-Checked git @('-C', $blueprints, 'apply', '--check', $recipePatch)
     Invoke-Checked git @('-C', $blueprints, 'apply', $recipePatch)
     $recipeDiff = & git -C $blueprints diff --numstat HEAD
-    if ($LASTEXITCODE -ne 0 -or $recipeDiff -ne "2`t0`tnextcloud-client/nextcloud-client.py") { throw 'Unexpected packaging recipe changes.' }
+    $expectedRecipeDiff = @("1`t1`tnextcloud-client/blacklist.txt", "8`t6`tnextcloud-client/nextcloud-client.py")
+    if ($LASTEXITCODE -ne 0 -or (Compare-Object @($recipeDiff) $expectedRecipeDiff)) { throw 'Unexpected packaging recipe changes.' }
     Invoke-Craft --options "nextcloud-client.versionSuffix=$suffix" --package nextcloud-client
     $installers = @(Get-ChildItem (Join-Path $root 'tmp') -File -Filter 'nextcloud-client-*-windows-cl-msvc2022-x86_64.exe')
     if ($installers.Count -ne 1) { throw "Expected one packaged installer; found $($installers.Count)." }
     if (![Environment]::Is64BitProcess) { throw 'Installer verification requires 64-bit PowerShell.' }
-    $smoke = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Nextcloud'
+    $product = 'Sairibus Nextcloud'
+    $smoke = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) $product
     $installation = Start-Process -FilePath $installers[0].FullName -ArgumentList @('/S', '/AllUsers') -PassThru -Wait
     if ($installation.ExitCode -ne 0) { throw "Installer failed with exit code $($installation.ExitCode)." }
-    $application = Join-Path $smoke 'bin/nextcloud.exe'
+    $application = Join-Path $smoke 'bin/sairibusnextcloud.exe'
     if (!(Test-Path $application)) { throw 'Installed application is missing.' }
     if ((Get-Item $application).VersionInfo.FileVersion -notmatch '^35\.0\.0\.') { throw 'Installed client version is incorrect.' }
-    foreach ($name in @('nextcloud.exe', 'nextcloudsync.dll', 'nextcloud_csync.dll')) {
+    foreach ($name in @('sairibusnextcloud.exe', 'sairibusnextcloudsync.dll', 'sairibusnextcloud_csync.dll')) {
         $installedFile = Join-Path $smoke "bin/$name"
         $builtFile = Join-Path $build "bin/$name"
         if ((Get-FileHash $installedFile -Algorithm SHA256).Hash -ne (Get-FileHash $builtFile -Algorithm SHA256).Hash) {
@@ -115,7 +117,12 @@ try {
     $helperVersion = Start-Process -FilePath $installedHelper -ArgumentList @('--version') -PassThru -NoNewWindow
     if (!$helperVersion.WaitForExit(10000)) { $helperVersion.Kill(); throw 'Browser sign-in helper version check timed out.' }
     if ($helperVersion.ExitCode -ne 0) { throw 'Installed browser sign-in helper could not start.' }
-    $shortcutPath = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Nextcloud/Nextcloud.lnk'
+    $uninstallKeys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')
+    if (!($uninstallKeys | Where-Object { Test-Path (Join-Path $_ $product) })) { throw 'Uninstall entry is missing.' }
+    # The official Nextcloud MSI removes an NSIS installation registered as Nextcloud.
+    if ($uninstallKeys | Where-Object { Test-Path (Join-Path $_ 'Nextcloud') }) { throw 'Installer registered under the official product name.' }
+    if (Test-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Nextcloud')) { throw 'Installer wrote to the official installation directory.' }
+    $shortcutPath = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) "$product/$product.lnk"
     if (!(Test-Path $shortcutPath)) { throw 'Start Menu launcher is missing.' }
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $null
