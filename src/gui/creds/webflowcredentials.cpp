@@ -365,6 +365,14 @@ void WebFlowCredentials::forgetSensitiveData() {
     deleteKeychainEntries();
 }
 
+void WebFlowCredentials::forgetSignIn(const QString &user)
+{
+    // Deletes the keychain entries under the stored login name first.
+    forgetSensitiveData();
+    _user = user;
+    _account->setCredentialSetting(QString::fromLatin1(userC), user);
+}
+
 void WebFlowCredentials::setAccount(Account *account) {
     AbstractCredentials::setAccount(account);
     if (_user.isEmpty()) {

@@ -13,6 +13,7 @@
 #include "configfile.h"
 #include "creds/abstractcredentials.h"
 #include "creds/httpcredentials.h"
+#include "creds/webflowcredentials.h"
 #include "deviceauthorization.h"
 #include "devicesession.h"
 #include "logger.h"
@@ -778,7 +779,7 @@ void AccountState::checkServerUser()
             return;
         }
         // Nothing ties the browser's member to this account: ask before syncing its folders as them.
-        userChangeConfirmation()(previousUser, user, displayName, [self = QPointer<AccountState>(this), check, adopt, user](bool accepted) {
+        userChangeConfirmation()(previousUser, user, displayName, [self = QPointer<AccountState>(this), check, adopt, previousUser, user](bool accepted) {
             // The account may have been removed, or signed in again, while the question was open.
             if (!self || check != self->_serverUserCheck) {
                 return;
@@ -794,7 +795,13 @@ void AccountState::checkServerUser()
             state->_checkingServerUser = false;
             state->_deviceMemberUnverified = false;
             account->deviceSession()->retire(credentials->user(), credentials->password());
-            credentials->forgetSensitiveData();
+            // The login name belongs to the other member; the account keeps its own.
+            if (const auto webFlow = qobject_cast<WebFlowCredentials *>(credentials)) {
+                webFlow->forgetSignIn(previousUser);
+            } else {
+                credentials->forgetSensitiveData();
+            }
+            Q_EMIT account->wantsAccountSaved(account);
             state->_connectionErrors = {tr("Signed in as %1, which does not own this account. Sign in with the account's own member.").arg(user)};
             state->setState(SignedOut);
         });
