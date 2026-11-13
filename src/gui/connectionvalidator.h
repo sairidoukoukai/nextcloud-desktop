@@ -167,6 +167,7 @@ private:
     void reportConnected();
 #endif
     void reportResult(Status status);
+    [[nodiscard]] static QString deviceTokenRefusedError();
     void checkServerCapabilities();
     void fetchUser();
 

@@ -42,6 +42,16 @@ Item {
         name: "AccountWizardWindow"
         when: windowShown
 
+        function test_clubServerHidesServiceTokens() {
+            const window = createWizard(AccountWizardController.ServerStep)
+            const button = findChild(window, "cloudflareAccessButton")
+            verify(button)
+            window.controller.serverUrl = "https://cloud.example"
+            compare(button.visible, true)
+            window.controller.serverUrl = "https://nc.sairibus.com"
+            compare(button.visible, false)
+        }
+
         function test_cloudflareDialogDraftAndCancel() {
             const window = createWizard(AccountWizardController.ServerStep)
             const button = findChild(window, "cloudflareAccessButton")

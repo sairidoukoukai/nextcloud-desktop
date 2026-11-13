@@ -8,8 +8,8 @@
 #define MIRALL_ACCESS_MANAGER_H
 
 #include "owncloudlib.h"
-#include <QPointer>
 #include <QNetworkAccessManager>
+#include <QPointer>
 
 class QByteArray;
 class QUrl;
@@ -17,6 +17,7 @@ class QUrl;
 namespace OCC {
 
 class CloudflareAccess;
+class DeviceSession;
 
 /**
  * @brief The AccessManager class
@@ -31,21 +32,24 @@ public:
     static QByteArray generateRequestId();
 
     AccessManager(QObject *parent = nullptr, CloudflareAccess *cloudflareAccess = nullptr);
-    [[nodiscard]] CloudflareAccess *cloudflareAccess() const;
-    void setBrowserAccess(CloudflareAccess *access);
+    [[nodiscard]] CloudflareAccess *cloudflareAccess() const
+    {
+        return _cloudflareAccess;
+    }
     void setNativeCredentialEpoch(quint64 epoch)
     {
         _nativeCredentialEpoch = epoch;
     }
+    /** Adds the account's device token to requests for the club's Nextcloud. */
+    void setDeviceSession(DeviceSession *session);
 
 protected:
     QNetworkReply *createRequest(QNetworkAccessManager::Operation op, const QNetworkRequest &request, QIODevice *outgoingData = nullptr) override;
 
 private:
     CloudflareAccess *_cloudflareAccess;
-    QPointer<CloudflareAccess> _browserAccess;
-    bool _browserAccessAttached = false;
     quint64 _nativeCredentialEpoch = 0;
+    QPointer<DeviceSession> _deviceSession;
 };
 
 } // namespace OCC

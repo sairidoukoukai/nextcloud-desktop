@@ -20,6 +20,7 @@
 #include "cloudflareaccessreply.h"
 #include "common/utility.h"
 #include "cookiejar.h"
+#include "devicesession.h"
 #include "httplogger.h"
 
 using namespace Qt::StringLiterals;
@@ -48,15 +49,9 @@ AccessManager::AccessManager(QObject *parent, CloudflareAccess *cloudflareAccess
     });
 }
 
-CloudflareAccess *AccessManager::cloudflareAccess() const
+void AccessManager::setDeviceSession(DeviceSession *session)
 {
-    return _browserAccess && _browserAccess->enabled() ? _browserAccess.data() : _cloudflareAccess;
-}
-
-void AccessManager::setBrowserAccess(CloudflareAccess *access)
-{
-    _browserAccess = access;
-    _browserAccessAttached = access != nullptr;
+    _deviceSession = session;
 }
 
 QByteArray AccessManager::generateRequestId()
@@ -97,11 +92,13 @@ QNetworkReply *AccessManager::createRequest(QNetworkAccessManager::Operation op,
 
     QNetworkRequest newRequest(request);
     newRequest.setAttribute(NativeCredentialEpochAttribute, QVariant::fromValue(_nativeCredentialEpoch));
-    if (_browserAccessAttached && !_browserAccess) {
-        return new CloudflareAccessReply(op, newRequest, tr("The account was closed."), this);
-    }
-    if (const auto error = cloudflareAccess()->prepareRequest(newRequest); !error.isEmpty()) {
+    if (const auto error = _cloudflareAccess->prepareRequest(newRequest); !error.isEmpty()) {
         return new CloudflareAccessReply(op, newRequest, error, this);
+    }
+    if (_deviceSession) {
+        _deviceSession->decorate(newRequest);
+    } else {
+        DeviceSession::removeToken(newRequest);
     }
 
     // Respect request specific user agent if any
@@ -140,6 +137,11 @@ QNetworkReply *AccessManager::createRequest(QNetworkAccessManager::Operation op,
 
     const auto reply = QNetworkAccessManager::createRequest(op, newRequest, outgoingData);
     HttpLogger::logRequest(reply, op, outgoingData);
+    if (newRequest.hasRawHeader(DeviceSession::TokenHeader)) {
+        QObject::connect(reply, &QNetworkReply::finished, reply, [reply] {
+            DeviceSession::reportRefusedPath(reply);
+        });
+    }
     QObject::connect(reply, &QNetworkReply::requestSent, reply, [reply] {
         auto headers = reply->rawHeaderPairs();
         for (auto &header : headers) {

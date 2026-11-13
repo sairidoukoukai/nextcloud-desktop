@@ -4,7 +4,8 @@
  */
 
 #include "wizard/accountwizardcontroller.h"
-#include "accessmanager.h"
+#include "deviceauthorization.h"
+#include "devicesession.h"
 
 #include "account.h"
 #include "accountmanager.h"
@@ -104,14 +105,10 @@ bool localFolderContainsData(const QString &localSyncFolder)
 
 }
 
-AccountWizardController::AccountWizardController(QObject *parent,
-                                                 CloudflareAccess *cloudflareAccess,
-                                                 CloudflareAccess *browserSession,
-                                                 CloudflareBrowserLogin *browserLogin)
+AccountWizardController::AccountWizardController(QObject *parent, CloudflareAccess *cloudflareAccess)
     : QObject(parent)
     , _cloudflareAccess(cloudflareAccess ? cloudflareAccess : CloudflareAccess::instance())
-    , _browserSession(browserSession)
-    , _cloudflareAccessSettings(new CloudflareAccessSettingsController(this, _cloudflareAccess, browserLogin))
+    , _cloudflareAccessSettings(new CloudflareAccessSettingsController(this, _cloudflareAccess))
     , _localNetworkPermissionCheck(LocalNetworkPermission::checkDeniedForConnection)
     , _localSyncFolderPicker([this](const QString &caption, const QString &startFolder, std::function<void(const QString &, const QByteArray &)> completion) {
         pickLocalSyncFolder(caption, startFolder, std::move(completion));
@@ -166,18 +163,6 @@ void AccountWizardController::initialiseAccount()
         }
     }
 
-    connect(_cloudflareAccessSettings, &CloudflareAccessSettingsController::browserFinished, this, [this](bool success) {
-        if (!_browserAccessPending) {
-            return;
-        }
-        _browserAccessPending = false;
-        setBusy(false);
-        if (success && _account) {
-            startServerCheck(QUrl(normalizeServerUrlInput(_serverUrl, _account->davPath()), QUrl::StrictMode));
-        } else {
-            setErrorText(_cloudflareAccessSettings->error());
-        }
-    });
     initialiseOverrideServerChoices();
 
     const auto defaultUrl =
@@ -214,11 +199,6 @@ void AccountWizardController::initialiseOverrideServerChoices()
     }
 }
 
-CloudflareAccess *AccountWizardController::browserSession() const
-{
-    return _browserSession ? _browserSession.data() : _account->browserAccess();
-}
-
 void AccountWizardController::ensureAccount()
 {
     if (_account) {
@@ -227,10 +207,6 @@ void AccountWizardController::ensureAccount()
 
     _account = AccountManager::createAccount();
     _account->setCredentials(CredentialsFactory::create("dummy"));
-    _cloudflareAccessSettings->setBrowserAccess(browserSession());
-    if (const auto manager = qobject_cast<AccessManager *>(_account->networkAccessManager())) {
-        manager->setBrowserAccess(browserSession());
-    }
 }
 
 AccountWizardController::Step AccountWizardController::currentStep() const
@@ -241,6 +217,55 @@ AccountWizardController::Step AccountWizardController::currentStep() const
 QString AccountWizardController::serverUrl() const
 {
     return _serverUrl;
+}
+
+bool AccountWizardController::deviceSignIn() const
+{
+    return DeviceSession::requiredFor(QUrl(normalizeServerUrlInput(_serverUrl)));
+}
+
+DeviceEnrollment *AccountWizardController::deviceEnrollment()
+{
+    if (_deviceEnrollment && _deviceEnrollment->session() == _account->deviceSession()) {
+        return _deviceEnrollment;
+    }
+    if (_deviceEnrollment) {
+        _deviceEnrollment->cancel();
+        _deviceEnrollment->deleteLater();
+    }
+    _deviceEnrollment = new DeviceEnrollment(_account->deviceSession(), this);
+    // Step 1 done: the online token now serves the server check and Login Flow V2.
+    connect(_deviceEnrollment, &DeviceEnrollment::onlineSignedIn, this, [this] {
+        setAuthStatusText({});
+        startServerCheck(_account->url());
+    });
+    // Step 3 done: the account keeps its own offline session.
+    connect(_deviceEnrollment, &DeviceEnrollment::offlineReady, this, [this] {
+        finishDeviceSignIn(true);
+    });
+    connect(_deviceEnrollment, &DeviceEnrollment::failed, this, [this](const QString &error) {
+        finishDeviceSignIn(false, error);
+    });
+    return _deviceEnrollment;
+}
+
+void AccountWizardController::finishDeviceSignIn(bool success, const QString &error)
+{
+    const auto user = std::exchange(_pendingUser, {});
+    const auto appPassword = std::exchange(_pendingAppPassword, {});
+    if (success) {
+        connectToAuthenticatedAccount(_account->url().toString(), user, appPassword);
+        return;
+    }
+    if (!appPassword.isEmpty()) {
+        // Without an offline session this app password is of no use; delete it while the online token works.
+        _account->deviceSession()->retire(user, appPassword);
+    }
+    setBusy(false);
+    setAuthPolling(false);
+    setAuthStatusText({});
+    setCurrentStep(ServerStep);
+    setErrorText(error);
 }
 
 QString AccountWizardController::cloudflareServerUrl() const
@@ -790,34 +815,30 @@ void AccountWizardController::submitServerUrl()
     setBasicAuthPassword({});
     normalizedServerUrl = normalizeServerUrlInput(_serverUrl, _account->davPath());
     const auto accountUrl = QUrl(normalizedServerUrl, QUrl::StrictMode);
-    if (CloudflareAccess::origin(accountUrl) == QUrl("https://nc.sairibus.com"_L1) && (!browserSession()->enabled() || !browserSession()->ready())) {
-        if (_cloudflareAccessSettings->busy()) {
-            setErrorText(tr("Saved sign-in is still loading. Please try again in a moment."));
-            return;
-        }
-        setServerUrl(accountUrl.toString());
-        _browserAccessPending = true;
-        setBusy(true);
-        setErrorText({});
-        _cloudflareAccessSettings->signInBrowser(accountUrl.toString());
-        return;
-    }
     if (const auto error = cloudflareAccessError(accountUrl); !error.isEmpty()) {
         setErrorText(error);
         return;
     }
     setServerUrl(accountUrl.toString());
+    if (DeviceSession::requiredFor(accountUrl) && _account->deviceSession()->status() != DeviceSession::Status::Online) {
+        // Step 1: an online sign-in in the browser, before any request to the server.
+        _account->setUrl(accountUrl);
+        setErrorText({});
+        setBusy(true);
+        setAuthStatusText(tr("Continue in your browser") + QStringLiteral("…"));
+        deviceEnrollment()->signInOnline();
+        return;
+    }
     startServerCheck(accountUrl);
 }
 
 QString AccountWizardController::cloudflareAccessError(const QUrl &url) const
 {
-    const auto access = _account && browserSession()->enabled() ? browserSession() : _cloudflareAccess;
-    if (!access->protects(url)) {
+    if (!_cloudflareAccess->protects(url)) {
         return {};
     }
-    if (!access->ready()) {
-        return access->error().isEmpty() ? tr("Cloudflare Access credentials are still loading. Please try again.") : access->error();
+    if (!_cloudflareAccess->ready()) {
+        return _cloudflareAccess->error().isEmpty() ? tr("Cloudflare Access credentials are still loading. Please try again.") : _cloudflareAccess->error();
     }
 #ifdef BUILD_FILE_PROVIDER_MODULE
     if (isUsingFileProvider()) {
@@ -882,10 +903,6 @@ void AccountWizardController::startServerCheck(const QUrl &serverUrl)
 {
     _account->setUrl(serverUrl);
     _account->setCredentials(CredentialsFactory::create("dummy"));
-    _cloudflareAccessSettings->setBrowserAccess(browserSession());
-    if (const auto manager = qobject_cast<AccessManager *>(_account->networkAccessManager())) {
-        manager->setBrowserAccess(browserSession());
-    }
     const auto proxyType = proxySettingsAvailable() ? _proxySettings._proxyType : QNetworkProxy::NoProxy;
     _account->setProxyType(proxyType);
 
@@ -1010,6 +1027,12 @@ void AccountWizardController::slotFoundServer(const QUrl &url, const QJsonObject
         setAuthStatusText({});
         setCurrentStep(BasicAuthStep);
         QTimer::singleShot(0, this, &AccountWizardController::submitBasicAuth);
+        return;
+    }
+
+    // Step 2: the club's Nextcloud issues app passwords only through Login Flow V2.
+    if (DeviceSession::requiredFor(url)) {
+        startFlow2Auth();
         return;
     }
 
@@ -1142,6 +1165,16 @@ void AccountWizardController::slotFlow2AuthResult(Flow2Auth::Result result, cons
         break;
     case Flow2Auth::LoggedIn:
         setAuthPolling(false);
+        if (_account->deviceSession()->appliesTo(_account->url())) {
+            // Step 3: the offline grant follows the browser step of Login Flow V2 in the same browser session.
+            _pendingUser = user;
+            _pendingAppPassword = appPassword;
+            setBusy(true);
+            setErrorText({});
+            setAuthStatusText(tr("Finishing sign-in in your browser") + QStringLiteral("…"));
+            deviceEnrollment()->completeOffline();
+            break;
+        }
         connectToAuthenticatedAccount(_account->url().toString(), user, appPassword);
         break;
     }
@@ -1395,10 +1428,19 @@ void AccountWizardController::fetchRootFolderSize()
 
 void AccountWizardController::cancel()
 {
-    _browserAccessPending = false;
-    _cloudflareAccessSettings->cancelBrowserSignIn();
+    if (_deviceEnrollment) {
+        _deviceEnrollment->cancel();
+    }
     if (_account) {
-        browserSession()->clear();
+        const auto session = _account->deviceSession();
+        if (session->status() == DeviceSession::Status::Online || session->status() == DeviceSession::Status::Offline) {
+            const auto credentials = _account->credentials();
+            const auto user = !_pendingUser.isEmpty() ? _pendingUser : (credentials ? credentials->user() : QString{});
+            const auto appPassword = !_pendingAppPassword.isEmpty() ? _pendingAppPassword : (credentials ? credentials->password() : QString{});
+            session->retire(user, appPassword);
+        }
+        _pendingUser.clear();
+        _pendingAppPassword.clear();
     }
     Q_EMIT finished(QDialog::Rejected);
 }
@@ -1406,6 +1448,16 @@ void AccountWizardController::cancel()
 void AccountWizardController::goBack()
 {
     setErrorText({});
+    if (_deviceEnrollment && _deviceEnrollment->busy()) {
+        _deviceEnrollment->cancel();
+        if (!_pendingAppPassword.isEmpty()) {
+            _account->deviceSession()->retire(_pendingUser, _pendingAppPassword);
+        }
+        _pendingUser.clear();
+        _pendingAppPassword.clear();
+        setBusy(false);
+        setAuthStatusText({});
+    }
     if (_currentStep == BrowserAuthStep || _currentStep == BasicAuthStep || _currentStep == SyncOptionsStep) {
         discardFlow2Auth();
         setPublicShareSetup(false);
@@ -2295,7 +2347,7 @@ void AccountWizardController::clearClientCertificateInput()
 
 bool AccountWizardController::checkDowngradeAdvised(QNetworkReply *reply) const
 {
-    if (!reply || reply->url().scheme() != "https"_L1 || _cloudflareAccess->protects(reply->url()) || (_account && browserSession()->protects(reply->url()))) {
+    if (!reply || reply->url().scheme() != "https"_L1 || _cloudflareAccess->protects(reply->url())) {
         return false;
     }
 

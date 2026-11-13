@@ -8,6 +8,7 @@
 #include "creds/httpcredentials.h"
 #include "creds/keychainchunk.h"
 #include "accessmanager.h"
+#include "devicesession.h"
 #include "account.h"
 #include "configfile.h"
 #include "theme.h"
@@ -194,6 +195,10 @@ bool WebFlowCredentials::stillValid(QNetworkReply *reply) {
     if (reply->error() != QNetworkReply::NoError) {
         qCWarning(lcWebFlowCredentials()) << reply->error();
         qCWarning(lcWebFlowCredentials()) << reply->errorString();
+    }
+    // A Bearer challenge concerns the device token, not the app password.
+    if (DeviceSession::isTokenChallenge(reply)) {
+        return true;
     }
     return (reply->error() != QNetworkReply::AuthenticationRequiredError);
 }

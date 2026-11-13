@@ -32,7 +32,7 @@ class AccountState;
 class FolderDefinition;
 class CloudflareAccessSettingsController;
 class CloudflareAccess;
-class CloudflareBrowserLogin;
+class DeviceEnrollment;
 
 namespace Utility
 {
@@ -105,6 +105,7 @@ class AccountWizardController : public QObject
     Q_PROPERTY(bool clientCertificateValid READ clientCertificateValid NOTIFY clientCertificateChanged)
     Q_PROPERTY(QObject *cloudflareAccess READ cloudflareAccess CONSTANT)
     Q_PROPERTY(QString cloudflareServerUrl READ cloudflareServerUrl NOTIFY serverUrlChanged)
+    Q_PROPERTY(bool deviceSignIn READ deviceSignIn NOTIFY serverUrlChanged)
 
 public:
     [[nodiscard]] QObject *cloudflareAccess() const;
@@ -113,21 +114,18 @@ public:
         BrowserAuthStep,
         BasicAuthStep,
         SyncOptionsStep,
-        CompletedStep,
+        CompletedStep
     };
     Q_ENUM(Step)
 
     enum SyncMode {
         SyncEverything = 0,
         SelectiveSync,
-        VirtualFiles,
+        VirtualFiles
     };
     Q_ENUM(SyncMode)
 
-    explicit AccountWizardController(QObject *parent = nullptr,
-                                     CloudflareAccess *cloudflareAccess = nullptr,
-                                     CloudflareAccess *browserSession = nullptr,
-                                     CloudflareBrowserLogin *browserLogin = nullptr);
+    explicit AccountWizardController(QObject *parent = nullptr, CloudflareAccess *cloudflareAccess = nullptr);
     ~AccountWizardController() override;
 
     /** @brief Sets the wizard window that native panels are attached to. */
@@ -139,6 +137,8 @@ public:
     [[nodiscard]] Step currentStep() const;
     [[nodiscard]] QString serverUrl() const;
     [[nodiscard]] QString cloudflareServerUrl() const;
+    /** Whether the entered server signs devices in through the club's identity provider. */
+    [[nodiscard]] bool deviceSignIn() const;
     void setServerUrl(const QString &serverUrl);
     [[nodiscard]] bool serverUrlEditable() const;
     [[nodiscard]] bool overrideServerSelectionRequired() const;
@@ -282,10 +282,12 @@ private Q_SLOTS:
 
 private:
     CloudflareAccess *_cloudflareAccess;
-    bool _browserAccessPending = false;
-    QPointer<CloudflareAccess> _browserSession;
-    [[nodiscard]] CloudflareAccess *browserSession() const;
     CloudflareAccessSettingsController *_cloudflareAccessSettings;
+    DeviceEnrollment *deviceEnrollment();
+    void finishDeviceSignIn(bool success, const QString &error = {});
+    QPointer<DeviceEnrollment> _deviceEnrollment;
+    QString _pendingUser;
+    QString _pendingAppPassword;
     using LocalNetworkPermissionCheck = std::function<void(const QUrl &, QObject *, std::function<void(bool)>)>;
     // Reports the chosen folder, or an empty path when cancelled, and its security-scoped bookmark if any.
     using LocalSyncFolderPicker = std::function<void(const QString &, const QString &, std::function<void(const QString &, const QByteArray &)>)>;

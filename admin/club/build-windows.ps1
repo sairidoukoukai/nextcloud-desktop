@@ -56,9 +56,6 @@ try {
         if ($LASTEXITCODE -ne 0 -or $actual -ne $pin[1]) { throw "Build dependency pin changed: $($pin[0])." }
     }
     Invoke-Craft --install-deps nextcloud-client
-    $helperDirectory = Join-Path $scratch 'browser-login-helper'
-    Invoke-Checked python @((Join-Path $workspace 'admin/club/release.py'), 'helper', $helperDirectory)
-    $env:SAIRIBUS_CLOUDFLARED_DIRECTORY = $helperDirectory
     Invoke-Craft --src-dir $workspace --options "nextcloud-client.versionSuffix=$suffix" nextcloud-client
     $build = Join-Path $root 'build/nextcloud-client/work/build'
     $cache = Get-Content (Join-Path $build 'CMakeCache.txt') -Raw
@@ -72,14 +69,13 @@ try {
     $env:PATH = "$(Join-Path $root 'bin');$(Join-Path $root 'dev-utils/bin');$env:PATH"
     $env:QT_QPA_PLATFORM = 'offscreen'
     $env:QT_QUICK_BACKEND = 'software'
-    $tests = '^(CloudflareAccess|Cookies|AccountWizardController|AccountWizardWindowQml|SettingsDialog|PushNotifications|RemoteWipe|AccountState|ConnectionValidator|WindowCloseQml|SyncEngine|SyncCfApi|UnifiedSharing)Test$'
+    $tests = '^(CloudflareAccess|DeviceSession|Cookies|AccountWizardController|AccountWizardWindowQml|SettingsDialog|PushNotifications|RemoteWipe|AccountState|ConnectionValidator|WindowCloseQml|SyncEngine|SyncCfApi|UnifiedSharing)Test$'
     $inventory = & ctest --test-dir $build --show-only=json-v1 -R $tests
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate the client test suites.' }
     $inventoryPath = Join-Path $scratch 'test-inventory.json'
     $inventory | Set-Content -Path $inventoryPath -Encoding utf8
     Invoke-Checked python @((Join-Path $workspace 'admin/club/release.py'), 'test-list', $inventoryPath)
     Invoke-Checked ctest @('--test-dir', $build, '--output-on-failure', '--no-tests=error', '--timeout', '180', '-R', $tests)
-    $helperPin = Get-Content (Join-Path $workspace 'admin/club/cloudflared.json') -Raw | ConvertFrom-Json
     $blueprints = Join-Path $root 'etc/blueprints/locations/craft-blueprints-nextcloud'
     $blueprintHead = & git -C $blueprints rev-parse HEAD
     if ($LASTEXITCODE -ne 0 -or $blueprintHead -ne 'd9829275a569d3cf83e42ad9c50140074d01dd9f') { throw 'Packaging recipe revision changed.' }
@@ -106,17 +102,6 @@ try {
             throw "Installed $name differs from the tested build."
         }
     }
-    $installedHelper = Join-Path $smoke 'bin/nextcloud-cloudflared.exe'
-    if ((Get-FileHash $installedHelper -Algorithm SHA256).Hash.ToLowerInvariant() -ne $helperPin.windows_amd64.sha256) {
-        throw 'Installed browser sign-in helper differs from the pinned source build.'
-    }
-    $installedNotices = Join-Path $smoke 'bin/nextcloud-cloudflared-LICENSE.txt'
-    if ((Get-FileHash $installedNotices -Algorithm SHA256).Hash -ne (Get-FileHash (Join-Path $helperDirectory 'nextcloud-cloudflared-LICENSE.txt') -Algorithm SHA256).Hash) {
-        throw 'Installed browser sign-in licenses differ from the collected notices.'
-    }
-    $helperVersion = Start-Process -FilePath $installedHelper -ArgumentList @('--version') -PassThru -NoNewWindow
-    if (!$helperVersion.WaitForExit(10000)) { $helperVersion.Kill(); throw 'Browser sign-in helper version check timed out.' }
-    if ($helperVersion.ExitCode -ne 0) { throw 'Installed browser sign-in helper could not start.' }
     $shortcutPath = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Nextcloud/Nextcloud.lnk'
     if (!(Test-Path $shortcutPath)) { throw 'Start Menu launcher is missing.' }
     $shell = New-Object -ComObject WScript.Shell

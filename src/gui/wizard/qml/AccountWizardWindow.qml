@@ -340,7 +340,7 @@ WizardStyledWindow {
             Button {
                 objectName: "cloudflareAccessButton"
                 visible: root.controller && root.controller.currentStep === AccountWizardController.ServerStep
-                    && !/^https:\/\/nc\.sairibus\.com(?::443)?(?:\/|$)/.test(root.controller.cloudflareServerUrl)
+                    && !root.controller.deviceSignIn
                 enabled: root.controller && !root.controller.busy && root.controller.cloudflareServerUrl.length > 0
                 flat: true
                 text: qsTr("Cloudflare Access…")

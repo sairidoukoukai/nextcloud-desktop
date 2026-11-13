@@ -55,7 +55,7 @@ namespace OCC {
 
 class AbstractCredentials;
 class AccessManager;
-class CloudflareAccess;
+class DeviceSession;
 class SimpleNetworkJob;
 class PushNotifications;
 class UserStatusConnector;
@@ -162,7 +162,8 @@ public:
 
     /// The internal id of the account.
     [[nodiscard]] QString id() const;
-    [[nodiscard]] CloudflareAccess *browserAccess();
+    /// The account's device session for the club's Nextcloud.
+    [[nodiscard]] DeviceSession *deviceSession();
 
     /** Server url of the account */
     void setUrl(const QUrl &url);
@@ -558,7 +559,7 @@ private:
 
     QWeakPointer<Account> _sharedThis;
     QString _id;
-    CloudflareAccess *_browserAccess = nullptr;
+    DeviceSession *_deviceSession = nullptr;
     QString _davUser;
     QString _davDisplayName;
     QString _displayName;

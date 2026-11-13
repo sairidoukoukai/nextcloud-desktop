@@ -15,6 +15,7 @@
 #include "configfile.h"
 #include "cookiejar.h"
 #include "creds/abstractcredentials.h"
+#include "devicesession.h"
 #include "httplogger.h"
 #include "networkjobs.h"
 #include "pushnotifications.h"
@@ -277,17 +278,24 @@ QColor Account::accentColor() const
     return adjusted;
 }
 
-CloudflareAccess *Account::browserAccess()
-{
-    if (!_browserAccess) {
-        _browserAccess = new CloudflareAccess(this, {}, std::chrono::seconds(30), _uuid.toString(QUuid::WithoutBraces));
-    }
-    return _browserAccess;
-}
-
 QString Account::id() const
 {
     return _id;
+}
+
+DeviceSession *Account::deviceSession()
+{
+    if (!_deviceSession) {
+        _deviceSession = new DeviceSession(this);
+        // The UUID is read when the store is used: a restored account receives its saved UUID after construction.
+        _deviceSession->setStorageKey([this] {
+            return Theme::instance()->appName() + ":device-session:"_L1 + _uuid.toString(QUuid::WithoutBraces);
+        });
+        _deviceSession->setProxyProvider([this] {
+            return _networkAccessManager ? _networkAccessManager->proxy() : QNetworkProxy(QNetworkProxy::DefaultProxy);
+        });
+    }
+    return _deviceSession;
 }
 
 AbstractCredentials *Account::credentials() const
@@ -322,7 +330,7 @@ void Account::setCredentials(AbstractCredentials *cred)
     // processing slotHandleSslErrors().
     _networkAccessManager = QSharedPointer<QNetworkAccessManager>(_credentials->createQNAM(), &QObject::deleteLater);
     if (const auto manager = qobject_cast<AccessManager *>(_networkAccessManager.data())) {
-        manager->setBrowserAccess(browserAccess());
+        manager->setDeviceSession(deviceSession());
     }
     advanceCredentialEpoch();
 
@@ -483,7 +491,7 @@ void Account::resetNetworkAccessManager()
     // Make it call deleteLater to make sure that we can return to any QNAM stack frames safely.
     _networkAccessManager = QSharedPointer<QNetworkAccessManager>(_credentials->createQNAM(), &QObject::deleteLater);
     if (const auto manager = qobject_cast<AccessManager *>(_networkAccessManager.data())) {
-        manager->setBrowserAccess(browserAccess());
+        manager->setDeviceSession(deviceSession());
     }
     advanceCredentialEpoch();
 
@@ -795,7 +803,7 @@ void Account::cancelCloudflareCredentialCheck()
 
 void Account::handleInvalidCredentials(QNetworkReply *reply)
 {
-    if (reply && CloudflareAccess::hasCredentials(reply->request())) {
+    if (reply && reply->request().hasRawHeader("CF-Access-Client-Id")) {
         const auto accountManager = qobject_cast<AccessManager *>(networkAccessManager());
         const auto access = accountManager ? accountManager->cloudflareAccess() : nullptr;
         const auto challengedRequest = reply->request();
@@ -865,8 +873,11 @@ void Account::handleInvalidCredentials(QNetworkReply *reply)
         });
         return;
     }
-    // Retrieving password will trigger remote wipe check job
-    retrieveAppPassword();
+    // The club's Nextcloud has no remote wipe; its devices only take a new app password.
+    if (!DeviceSession::requiredFor(url())) {
+        // Retrieving password will trigger remote wipe check job
+        retrieveAppPassword();
+    }
 
     Q_EMIT invalidCredentials();
 }

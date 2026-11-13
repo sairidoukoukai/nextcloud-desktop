@@ -8,6 +8,7 @@
 #include "account.h"
 #include "cloudflareaccess.h"
 #include "common/asserts.h"
+#include "devicesession.h"
 #include "httplogger.h"
 #include "networkjobs.h"
 #include "owncloudpropagator.h"
@@ -214,6 +215,20 @@ void AbstractNetworkJob::slotFinished()
     }
 
     if (_reply->error() != QNetworkReply::NoError) {
+        // The gateway asks for a new device token; the app password is still valid.
+        if (!_deviceTokenRetried && DeviceSession::isTokenChallenge(_reply)) {
+            if (const auto session = _account->deviceSession(); session->appliesTo(_reply->url()) && session->canRefresh()) {
+                qCInfo(lcNetworkJob) << "Renewing the device token before retrying" << _reply->url().path();
+                _deviceTokenRetried = true;
+                session->refreshThen(this, [this](bool) {
+                    // A replaced network access manager takes its replies with it.
+                    if (_reply) {
+                        retry();
+                    }
+                });
+                return;
+            }
+        }
         if (!_wasRetriedAfterConnectionClosed && _reply->error() == QNetworkReply::RemoteHostClosedError) {
             qCWarning(lcNetworkJob()) << "Will retry sending the request once when we detect a remote host closed error";
             _wasRetriedAfterConnectionClosed = true;
@@ -571,6 +586,10 @@ void AbstractNetworkJob::retry()
     QByteArray verb = HttpLogger::requestVerb(*_reply);
     qCInfo(lcNetworkJob) << "Restarting" << verb << requestedUrl;
     if (_requestBody) {
+        // Qt reads an unopened QBuffer without opening it; a resend must open it before rewinding.
+        if (!_requestBody->isOpen()) {
+            _requestBody->open(QIODevice::ReadOnly);
+        }
         _requestBody->seek(0);
     }
     // The cookie will be added automatically, we don't want AccessManager::createRequest to duplicate them

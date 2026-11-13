@@ -208,6 +208,7 @@ private:
     bool _ignoreCredentialFailure = false;
     QPointer<QNetworkReply> _reply; // (QPointer because the NetworkManager may be destroyed before the jobs at exit)
     bool _wasRetriedAfterConnectionClosed = false;
+    bool _deviceTokenRetried = false;
     QString _path;
     int _redirectCount = 0;
     int _http2ResendCount = 0;

@@ -4,6 +4,7 @@
  */
 
 #pragma once
+#include <QElapsedTimer>
 #include <QPointer>
 #include <QUrl>
 #include <QTimer>
@@ -70,6 +71,7 @@ private:
     QString _pollToken;
     QString _pollEndpoint;
     QTimer _pollTimer;
+    QElapsedTimer _flowStarted;
     qint64 _secondsLeft = 0LL;
     qint64 _secondsInterval = 0LL;
     bool _isBusy = false;
