@@ -3,9 +3,9 @@ SPDX-FileCopyrightText: 2026 Sairibus contributors
 SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
-# Nextcloud Desktop with Cloudflare Access
+# Nextcloud Desktop for Sairibus
 
-An unofficial fork maintained by 再履バス同好会 (Sairibus), based on the Nextcloud Desktop stable branch for the version in [`VERSION.cmake`](VERSION.cmake). Each release names its upstream base commit in its notes and `build-info.json`. It connects the classic desktop client through Cloudflare Access browser login and Nextcloud's per-device authorization.
+An unofficial fork maintained by 再履バス同好会 (Sairibus), based on the Nextcloud Desktop stable branch for the version in [`VERSION.cmake`](VERSION.cmake). Each release names its upstream base commit in its notes and `build-info.json`. Accounts on https://nc.sairibus.com sign in once with the 再バ同アカウント in the browser.
 
 [Download releases](https://github.com/sairidoukoukai/nextcloud-desktop/releases) · [Upstream project](https://github.com/nextcloud/desktop)
 
@@ -14,18 +14,19 @@ An unofficial fork maintained by 再履バス同好会 (Sairibus), based on the 
 Releases target Windows x64. Installers are unsigned. This fork disables the official automatic updater; install subsequent releases from this repository.
 
 1. Enter **https://nc.sairibus.com** in the account wizard and continue.
-2. Sign in with your **再バ同アカウント** in the browser using a passkey or email code.
-3. Approve the device in Nextcloud, then choose the folders to sync.
+2. Sign in with your **再バ同アカウント** in the browser that opens, using a passkey or an email code.
+3. Approve the device on the Nextcloud page that follows in the same browser.
+4. Return to the client and choose the folders to sync.
 
-The server operator controls eligibility and must enable device authorization. The club's member UID review still applies. Other Cloudflare-protected servers can use administrator-issued service credentials through **Cloudflare Access…**.
+One sign-in covers every browser page. [Signing in](doc/sign-in.md) explains what the client keeps and what to do when it asks you to sign in again.
 
 ## Credential handling
 
-Browser sessions are stored in the operating system's credential store, separately for each local account UUID and exact HTTPS origin. Each account retains its own Nextcloud device password. Reauthentication requires the same central identity used during setup.
+Each account keeps its own sign-in for this computer in the operating system's credential store, next to its Nextcloud app password. Requests to nc.sairibus.com carry a five-minute token renewed from that sign-in; other servers and redirects never receive it, and logs redact it.
 
-To retire a device, revoke its Nextcloud application password and its Cloudflare session. Removing an account also clears its locally stored Access session. The legacy service-credential mode shares one origin's credentials within a profile.
+Removing an account ends its sign-in and deletes its app password on the server. The server operator controls eligibility; disabling a member or removing their Nextcloud access stops their devices within five minutes.
 
-macOS File Provider is unsupported. This release provides a Windows x64 installer.
+Other Cloudflare-protected servers can use administrator-issued [service credentials](doc/cloudflare-access.md) through **Cloudflare Access…**. macOS File Provider is unsupported.
 
 ## Build and release
 
@@ -41,7 +42,7 @@ The **Sairibus Windows release** workflow runs manually from `main`. It rejects 
 
 Release automation uses standard GitHub-hosted runners. No signing credentials or server credentials are required. Review changes through pull requests before running a release.
 
-For local development, follow the [upstream development documentation](doc). The focused test targets are `CloudflareAccessTest`, `CookiesTest`, `AccountWizardControllerTest`, `SettingsDialogTest`, `PushNotificationsTest`, `RemoteWipeTest`, `AccountStateTest`, `ConnectionValidatorTest`, `SyncEngineTest`, `SyncCfApiTest`, `UnifiedSharingTest`, and `WindowCloseQmlTest`; CTest also runs `AccountWizardWindowQmlTest`. `SyncCfApiTest` runs on Windows.
+For local development, follow the [upstream development documentation](doc). The focused test targets are `CloudflareAccessTest`, `DeviceSessionTest`, `CookiesTest`, `AccountWizardControllerTest`, `SettingsDialogTest`, `PushNotificationsTest`, `RemoteWipeTest`, `AccountStateTest`, `ConnectionValidatorTest`, `SyncEngineTest`, `SyncCfApiTest`, `UnifiedSharingTest`, and `WindowCloseQmlTest`; CTest also runs `AccountWizardWindowQmlTest`. `SyncCfApiTest` runs on Windows.
 
 ## Upstream sync
 

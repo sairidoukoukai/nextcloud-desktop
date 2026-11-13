@@ -120,7 +120,7 @@ jobs:
 
           Source commit: `{info['source_commit']}`. Upstream {info['upstream_branch']} base: `{info['upstream_base']}`. Fourteen focused client test suites passed on the GitHub Windows runner. A silent installation check verified the executable and sync libraries against the tested build, plus the Start Menu launcher target. GUI startup and synchronization with the production server have not been tested by this workflow.
 
-          macOS File Provider is unsupported.
+          Enter https://nc.sairibus.com in the account wizard and sign in with your 再バ同アカウント in the browser; the same browser then approves the device. Each account keeps its own sign-in in the Windows credential store. macOS File Provider is unsupported.
 
           Verify the download against `SHA256SUMS`. `build-info.json` records the exact source commit. Complete GPL source is available from this release's source archives.
           """
