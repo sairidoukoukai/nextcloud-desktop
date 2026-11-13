@@ -38,6 +38,9 @@ opens the browser to sign in again and keeps your folders and app password.
   the device again.
 - **"The server refused this computer's sign-in"**: your account no longer has
   Nextcloud access. Ask a club administrator.
+- **"Keep syncing these folders as …?"**: the account was set up under an
+  older Nextcloud ID. Choose **Yes** if the name shown is yours; **No** signs
+  the account out.
 
 ## Retiring a computer
 

@@ -15,6 +15,7 @@
 #include <QPointer>
 #include <QTimer>
 
+#include <functional>
 #include <memory>
 
 class QSettings;
@@ -165,6 +166,11 @@ public:
     void setDesktopNotificationsAllowed(bool isAllowed);
 
     ConnectionStatus lastConnectionStatus() const;
+
+    /** Answers whether an account may keep its folders under a new Nextcloud user ID. */
+    using UserChangeConfirmation = std::function<void(const QString &previousUser, const QString &user, const QString &displayName, std::function<void(bool)> done)>;
+    /** Replaces the dialog that confirms a user change. Tests answer without a window. */
+    static void setUserChangeConfirmation(UserChangeConfirmation confirmation);
     
     void trySignIn();
 
@@ -182,6 +188,11 @@ private:
     bool ensureDeviceSession();
     /** Runs the device sign-in. A background run follows a connection and never signs the account out. */
     void startDeviceSignIn(bool offlineGrantOnly, bool background = false);
+    /**
+     * After a new app password for the club's Nextcloud, adopts the user ID the
+     * server reports when it differs from the stored one, then calls @p next.
+     */
+    void adoptServerUser(std::function<void()> next);
 
     int retryCount() const;
     void increaseRetryCount();
@@ -250,6 +261,8 @@ private:
     DeviceEnrollment *_deviceEnrollment = nullptr;
     bool _waitingForDeviceToken = false;
     bool _waitingForDeviceSignIn = false;
+    /** The account signed in again without an earlier device session, so nothing ties the browser's member to this account yet. */
+    bool _deviceMemberUnverified = false;
 
     /**
      * Holds the App names and URLs available on the server
