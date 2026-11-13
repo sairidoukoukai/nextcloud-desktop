@@ -189,10 +189,10 @@ private:
     /** Runs the device sign-in. A background run follows a connection and never signs the account out. */
     void startDeviceSignIn(bool offlineGrantOnly, bool background = false);
     /**
-     * After a new app password for the club's Nextcloud, adopts the user ID the
-     * server reports when it differs from the stored one, then calls @p next.
+     * Before connecting to the club's Nextcloud, adopts the user ID the server reports
+     * for the app password when it differs from the stored one, then checks connectivity again.
      */
-    void adoptServerUser(std::function<void()> next);
+    void checkServerUser();
 
     int retryCount() const;
     void increaseRetryCount();
@@ -263,6 +263,13 @@ private:
     bool _waitingForDeviceSignIn = false;
     /** The account signed in again without an earlier device session, so nothing ties the browser's member to this account yet. */
     bool _deviceMemberUnverified = false;
+    /** The server reported the account's user ID for the current app password, or accepted a connection with it. */
+    bool _serverUserChecked = false;
+    /** The last check could not read the user ID; the next connection attempt goes ahead without it. */
+    bool _serverUserCheckFailed = false;
+    bool _checkingServerUser = false;
+    /** Counts checks so that a check made for replaced credentials is ignored. */
+    quint64 _serverUserCheck = 0;
 
     /**
      * Holds the App names and URLs available on the server
