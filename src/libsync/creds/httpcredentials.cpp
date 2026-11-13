@@ -17,6 +17,7 @@
 
 #include "account.h"
 #include "accessmanager.h"
+#include "devicesession.h"
 #include "configfile.h"
 #include "theme.h"
 #include "syncengine.h"
@@ -323,6 +324,9 @@ void HttpCredentials::slotReadPasswordFromKeychain()
 
 bool HttpCredentials::stillValid(QNetworkReply *reply)
 {
+    if (DeviceSession::isTokenChallenge(reply)) {
+        return true;
+    }
     return ((reply->error() != QNetworkReply::AuthenticationRequiredError)
         // returned if user or password is incorrect
         && (reply->error() != QNetworkReply::OperationCanceledError

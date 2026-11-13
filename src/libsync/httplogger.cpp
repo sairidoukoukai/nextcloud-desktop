@@ -4,6 +4,7 @@
  */
 
 #include "httplogger.h"
+#include "devicesession.h"
 
 #include <QRegularExpression>
 #include <QLoggingCategory>
@@ -90,7 +91,8 @@ QByteArray HttpLogger::redactedHeaderValue(const QByteArray &name, const QByteAr
 {
     if (name.compare("CF-Access-Client-Id", Qt::CaseInsensitive) == 0 || name.compare("CF-Access-Client-Secret", Qt::CaseInsensitive) == 0
         || name.compare("Cookie", Qt::CaseInsensitive) == 0 || name.compare("Set-Cookie", Qt::CaseInsensitive) == 0
-        || name.compare("Cf-Access-Jwt-Assertion", Qt::CaseInsensitive) == 0 || name.compare("Proxy-Authorization", Qt::CaseInsensitive) == 0) {
+        || name.compare("Cf-Access-Jwt-Assertion", Qt::CaseInsensitive) == 0 || name.compare("Proxy-Authorization", Qt::CaseInsensitive) == 0
+        || name.compare(DeviceSession::TokenHeader, Qt::CaseInsensitive) == 0) {
         return "[redacted]";
     }
     if (name.compare("Authorization", Qt::CaseInsensitive) == 0) {

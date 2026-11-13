@@ -15,6 +15,7 @@
 #include "configfile.h"
 #include "cookiejar.h"
 #include "creds/abstractcredentials.h"
+#include "devicesession.h"
 #include "httplogger.h"
 #include "networkjobs.h"
 #include "pushnotifications.h"
@@ -282,6 +283,21 @@ QString Account::id() const
     return _id;
 }
 
+DeviceSession *Account::deviceSession()
+{
+    if (!_deviceSession) {
+        _deviceSession = new DeviceSession(this);
+        // The UUID is read when the store is used: a restored account receives its saved UUID after construction.
+        _deviceSession->setStorageKey([this] {
+            return Theme::instance()->appName() + ":device-session:"_L1 + _uuid.toString(QUuid::WithoutBraces);
+        });
+        _deviceSession->setProxyProvider([this] {
+            return _networkAccessManager ? _networkAccessManager->proxy() : QNetworkProxy(QNetworkProxy::DefaultProxy);
+        });
+    }
+    return _deviceSession;
+}
+
 AbstractCredentials *Account::credentials() const
 {
     return _credentials.data();
@@ -313,6 +329,9 @@ void Account::setCredentials(AbstractCredentials *cred)
     // This is necessary to avoid issues with the QNAM being deleted while
     // processing slotHandleSslErrors().
     _networkAccessManager = QSharedPointer<QNetworkAccessManager>(_credentials->createQNAM(), &QObject::deleteLater);
+    if (const auto manager = qobject_cast<AccessManager *>(_networkAccessManager.data())) {
+        manager->setDeviceSession(deviceSession());
+    }
     advanceCredentialEpoch();
 
     if (jar) {
@@ -471,6 +490,9 @@ void Account::resetNetworkAccessManager()
     // Use a QSharedPointer to allow locking the life of the QNAM on the stack.
     // Make it call deleteLater to make sure that we can return to any QNAM stack frames safely.
     _networkAccessManager = QSharedPointer<QNetworkAccessManager>(_credentials->createQNAM(), &QObject::deleteLater);
+    if (const auto manager = qobject_cast<AccessManager *>(_networkAccessManager.data())) {
+        manager->setDeviceSession(deviceSession());
+    }
     advanceCredentialEpoch();
 
     _networkAccessManager->setCookieJar(jar); // takes ownership of the old cookie jar
@@ -851,8 +873,11 @@ void Account::handleInvalidCredentials(QNetworkReply *reply)
         });
         return;
     }
-    // Retrieving password will trigger remote wipe check job
-    retrieveAppPassword();
+    // The club's Nextcloud has no remote wipe; its devices only take a new app password.
+    if (!DeviceSession::requiredFor(url())) {
+        // Retrieving password will trigger remote wipe check job
+        retrieveAppPassword();
+    }
 
     Q_EMIT invalidCredentials();
 }

@@ -293,6 +293,7 @@ if(NOT BUILD_FILE_PROVIDER_MODULE)
 endif()
 
 nextcloud_add_test(NetworkSettings)
+nextcloud_add_test(DeviceSession)
 add_executable(CloudflareAccessTest testcloudflareaccess.cpp)
 target_link_libraries(CloudflareAccessTest PRIVATE Nextcloud::sync Qt::Test)
 target_compile_definitions(CloudflareAccessTest PRIVATE QT_NO_KEYWORDS)

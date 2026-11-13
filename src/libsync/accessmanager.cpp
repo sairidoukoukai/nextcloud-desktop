@@ -20,6 +20,7 @@
 #include "cloudflareaccessreply.h"
 #include "common/utility.h"
 #include "cookiejar.h"
+#include "devicesession.h"
 #include "httplogger.h"
 
 using namespace Qt::StringLiterals;
@@ -46,6 +47,11 @@ AccessManager::AccessManager(QObject *parent, CloudflareAccess *cloudflareAccess
             authenticator->setUser(QUuid::createUuid().toString());
         }
     });
+}
+
+void AccessManager::setDeviceSession(DeviceSession *session)
+{
+    _deviceSession = session;
 }
 
 QByteArray AccessManager::generateRequestId()
@@ -89,6 +95,11 @@ QNetworkReply *AccessManager::createRequest(QNetworkAccessManager::Operation op,
     if (const auto error = _cloudflareAccess->prepareRequest(newRequest); !error.isEmpty()) {
         return new CloudflareAccessReply(op, newRequest, error, this);
     }
+    if (_deviceSession) {
+        _deviceSession->decorate(newRequest);
+    } else {
+        DeviceSession::removeToken(newRequest);
+    }
 
     // Respect request specific user agent if any
     if (!newRequest.header(QNetworkRequest::UserAgentHeader).isValid()) {
@@ -126,6 +137,11 @@ QNetworkReply *AccessManager::createRequest(QNetworkAccessManager::Operation op,
 
     const auto reply = QNetworkAccessManager::createRequest(op, newRequest, outgoingData);
     HttpLogger::logRequest(reply, op, outgoingData);
+    if (newRequest.hasRawHeader(DeviceSession::TokenHeader)) {
+        QObject::connect(reply, &QNetworkReply::finished, reply, [reply] {
+            DeviceSession::reportRefusedPath(reply);
+        });
+    }
     QObject::connect(reply, &QNetworkReply::requestSent, reply, [reply] {
         auto headers = reply->rawHeaderPairs();
         for (auto &header : headers) {

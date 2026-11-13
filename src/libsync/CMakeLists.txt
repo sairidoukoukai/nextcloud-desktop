@@ -68,6 +68,10 @@ set(libsync_SRCS
     cloudflareaccess.cpp
     cloudflareaccessreply.h
     cloudflareaccessreply.cpp
+    devicesession.h
+    devicesession.cpp
+    deviceauthorization.h
+    deviceauthorization.cpp
     configfile.h
     configfile.cpp
     abstractnetworkjob.h

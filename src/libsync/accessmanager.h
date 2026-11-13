@@ -9,6 +9,7 @@
 
 #include "owncloudlib.h"
 #include <QNetworkAccessManager>
+#include <QPointer>
 
 class QByteArray;
 class QUrl;
@@ -16,6 +17,7 @@ class QUrl;
 namespace OCC {
 
 class CloudflareAccess;
+class DeviceSession;
 
 /**
  * @brief The AccessManager class
@@ -38,6 +40,8 @@ public:
     {
         _nativeCredentialEpoch = epoch;
     }
+    /** Adds the account's device token to requests for the club's Nextcloud. */
+    void setDeviceSession(DeviceSession *session);
 
 protected:
     QNetworkReply *createRequest(QNetworkAccessManager::Operation op, const QNetworkRequest &request, QIODevice *outgoingData = nullptr) override;
@@ -45,6 +49,7 @@ protected:
 private:
     CloudflareAccess *_cloudflareAccess;
     quint64 _nativeCredentialEpoch = 0;
+    QPointer<DeviceSession> _deviceSession;
 };
 
 } // namespace OCC

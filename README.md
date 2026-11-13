@@ -29,7 +29,7 @@ macOS File Provider is unsupported. This release provides a Windows x64 installe
 
 ## Build and release
 
-The [Windows build script](admin/club/build-windows.ps1) uses pinned Craft, CraftMaster and blueprint commits from the [build configuration](admin/club/craftmaster.ini). It builds the client, runs thirteen focused test suites, packages an installer, and checks a silent installation in the disposable runner.
+The [Windows build script](admin/club/build-windows.ps1) uses pinned Craft, CraftMaster and blueprint commits from the [build configuration](admin/club/craftmaster.ini). It builds the client, runs fourteen focused test suites, packages an installer, and checks a silent installation in the disposable runner.
 
 A [small patch](admin/club/patches/0001-nextcloud-blueprint-packaging.patch) repairs the pinned recipe's missing Python import and Start Menu launcher. The build checks the recipe revision and clean tree before applying it. `build-info.json` records the patch checksum.
 

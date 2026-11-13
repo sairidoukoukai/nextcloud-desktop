@@ -16,7 +16,7 @@ UPSTREAM_REPOSITORY = "nextcloud/desktop"
 BLUEPRINTS_COMMIT = "d9829275a569d3cf83e42ad9c50140074d01dd9f"
 RECIPE_PATCH = Path(__file__).resolve().parent / "patches/0001-nextcloud-blueprint-packaging.patch"
 EXPECTED_TESTS = {
-    "CloudflareAccessTest", "CookiesTest", "AccountWizardControllerTest",
+    "CloudflareAccessTest", "DeviceSessionTest", "CookiesTest", "AccountWizardControllerTest",
     "AccountWizardWindowQmlTest", "SettingsDialogTest", "PushNotificationsTest",
     "RemoteWipeTest", "AccountStateTest", "ConnectionValidatorTest",
     "WindowCloseQmlTest", "SyncEngineTest", "SyncCfApiTest", "UnifiedSharingTest",
@@ -43,7 +43,7 @@ def upstream_branch(version):
 def validate_tests(report):
     names = [test["name"] for test in report.get("tests", [])]
     if len(names) != len(EXPECTED_TESTS) or set(names) != EXPECTED_TESTS:
-        raise ValueError("CTest must register exactly the thirteen required client suites.")
+        raise ValueError("CTest must register exactly the fourteen required client suites.")
 
 
 def validate(tag, ref, head, main, existing_refs=(), version=None):
