@@ -48,17 +48,6 @@ AccessManager::AccessManager(QObject *parent, CloudflareAccess *cloudflareAccess
     });
 }
 
-CloudflareAccess *AccessManager::cloudflareAccess() const
-{
-    return _browserAccess && _browserAccess->enabled() ? _browserAccess.data() : _cloudflareAccess;
-}
-
-void AccessManager::setBrowserAccess(CloudflareAccess *access)
-{
-    _browserAccess = access;
-    _browserAccessAttached = access != nullptr;
-}
-
 QByteArray AccessManager::generateRequestId()
 {
     return QUuid::createUuid().toByteArray(QUuid::WithoutBraces);
@@ -97,10 +86,7 @@ QNetworkReply *AccessManager::createRequest(QNetworkAccessManager::Operation op,
 
     QNetworkRequest newRequest(request);
     newRequest.setAttribute(NativeCredentialEpochAttribute, QVariant::fromValue(_nativeCredentialEpoch));
-    if (_browserAccessAttached && !_browserAccess) {
-        return new CloudflareAccessReply(op, newRequest, tr("The account was closed."), this);
-    }
-    if (const auto error = cloudflareAccess()->prepareRequest(newRequest); !error.isEmpty()) {
+    if (const auto error = _cloudflareAccess->prepareRequest(newRequest); !error.isEmpty()) {
         return new CloudflareAccessReply(op, newRequest, error, this);
     }
 

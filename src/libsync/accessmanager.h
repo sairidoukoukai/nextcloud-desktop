@@ -8,7 +8,6 @@
 #define MIRALL_ACCESS_MANAGER_H
 
 #include "owncloudlib.h"
-#include <QPointer>
 #include <QNetworkAccessManager>
 
 class QByteArray;
@@ -31,8 +30,10 @@ public:
     static QByteArray generateRequestId();
 
     AccessManager(QObject *parent = nullptr, CloudflareAccess *cloudflareAccess = nullptr);
-    [[nodiscard]] CloudflareAccess *cloudflareAccess() const;
-    void setBrowserAccess(CloudflareAccess *access);
+    [[nodiscard]] CloudflareAccess *cloudflareAccess() const
+    {
+        return _cloudflareAccess;
+    }
     void setNativeCredentialEpoch(quint64 epoch)
     {
         _nativeCredentialEpoch = epoch;
@@ -43,8 +44,6 @@ protected:
 
 private:
     CloudflareAccess *_cloudflareAccess;
-    QPointer<CloudflareAccess> _browserAccess;
-    bool _browserAccessAttached = false;
     quint64 _nativeCredentialEpoch = 0;
 };
 

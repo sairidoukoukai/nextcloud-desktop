@@ -4,7 +4,6 @@
  */
 
 #include "accessmanager.h"
-#include "cloudflarebrowsertestutils.h"
 #include "account.h"
 #include "accountstate.h"
 #include "cloudflareaccess.h"
@@ -71,20 +70,15 @@ private Q_SLOTS:
     void cloudflareFailurePreservesNativeCredentials_data()
     {
         QTest::addColumn<QString>("statusOutcome");
-        QTest::addColumn<bool>("browser");
         for (const auto &outcome :
              {"edge-401"_L1, "edge-403"_L1, "malformed"_L1, "uninstalled"_L1, "string-installed"_L1, "redirect"_L1, "timeout"_L1, "native-401"_L1}) {
-            QTest::newRow(qPrintable(outcome)) << QString(outcome) << false;
-            if (outcome == "edge-401"_L1 || outcome == "edge-403"_L1 || outcome == "native-401"_L1) {
-                QTest::newRow(qPrintable(QString(outcome) + "-browser"_L1)) << QString(outcome) << true;
-            }
+            QTest::newRow(qPrintable(outcome)) << QString(outcome);
         }
     }
 
     void cloudflareFailurePreservesNativeCredentials()
     {
         QFETCH(QString, statusOutcome);
-        QFETCH(bool, browser);
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const auto previous = ConfigFile().configPath();
@@ -102,16 +96,9 @@ private Q_SLOTS:
         CloudflareAccessTestServer server;
         QVERIFY(server.isListening());
         const auto base = server.baseUrl();
-        const auto firstToken = OCC::Test::browserToken();
-        const auto renewedToken = OCC::Test::browserToken(QDateTime::currentSecsSinceEpoch() + 7200);
-        if (browser) {
-            access.saveBrowserToken(base, firstToken);
-        } else {
-            access.save(true, base, "client"_L1, "old-secret"_L1);
-        }
+        access.save(true, base, "client"_L1, "old-secret"_L1);
         server.respond = [&](const QByteArray &request) {
-            if (request.toLower().contains("cf-access-client-secret: new-secret")
-                || (request.toLower().contains("cf-access-token:") && request.contains(renewedToken))) {
+            if (request.toLower().contains("cf-access-client-secret: new-secret")) {
                 return CloudflareAccessTestServer::response(200, "{\"installed\":true}");
             }
             if (!request.startsWith("GET /status.php ")) {
@@ -160,11 +147,7 @@ private Q_SLOTS:
             QCOMPARE(credentials->password(), "native-device-secret"_L1);
             QVERIFY(!state.isSignedOut());
             const auto checks = state.checkConnectivityCount;
-            if (browser) {
-                access.saveBrowserToken(base, renewedToken);
-            } else {
-                access.save(true, base, "client"_L1, "new-secret"_L1);
-            }
+            access.save(true, base, "client"_L1, "new-secret"_L1);
             QTRY_VERIFY(state.checkConnectivityCount > checks);
             const auto job = account->sendRequest("GET", QUrl(base + "/request"_L1), request);
             connect(job, &SimpleNetworkJob::finishedSignal, account.data(), [](QNetworkReply *reply) {
@@ -173,12 +156,7 @@ private Q_SLOTS:
             });
             QSignalSpy resumed(job, &SimpleNetworkJob::finishedSignal);
             QTRY_COMPARE(resumed.count(), 1);
-            if (browser) {
-                QVERIFY(server.requests.last().toLower().contains("cf-access-token:"));
-                QVERIFY(server.requests.last().contains(renewedToken));
-            } else {
-                QVERIFY(server.requests.last().toLower().contains("cf-access-client-secret: new-secret"));
-            }
+            QVERIFY(server.requests.last().toLower().contains("cf-access-client-secret: new-secret"));
             QCOMPARE(credentials->forgotten, 0);
         }
         QVERIFY(server.requests.size() >= 2);

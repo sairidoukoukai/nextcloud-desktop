@@ -2,14 +2,6 @@
 # SPDX-FileCopyrightText: 2014 ownCloud GmbH
 # SPDX-License-Identifier: GPL-2.0-or-later
 project(libsync)
-file(READ "${CMAKE_SOURCE_DIR}/admin/club/cloudflared.json" CLOUDFLARED_MANIFEST)
-string(JSON CLOUDFLARED_HELPER_SHA256 GET "${CLOUDFLARED_MANIFEST}" windows_amd64 sha256)
-if(WIN32 AND DEFINED ENV{SAIRIBUS_CLOUDFLARED_DIRECTORY})
-    file(TO_CMAKE_PATH "$ENV{SAIRIBUS_CLOUDFLARED_DIRECTORY}" CLOUDFLARED_DIRECTORY)
-    install(FILES "${CLOUDFLARED_DIRECTORY}/nextcloud-cloudflared.exe"
-        "${CLOUDFLARED_DIRECTORY}/nextcloud-cloudflared-LICENSE.txt"
-        DESTINATION "${CMAKE_INSTALL_BINDIR}")
-endif()
 find_package(KF6Archive REQUIRED)
 include(DefinePlatformDefaults)
 
@@ -26,7 +18,6 @@ endif()
 if (WIN32)
   list(APPEND OS_SPECIFIC_LINK_LIBRARIES
     Crypt32
-    Advapi32
   )
 endif()
 
@@ -74,8 +65,6 @@ set(libsync_SRCS
     accessmanager.h
     accessmanager.cpp
     cloudflareaccess.h
-    cloudflarebrowserlogin.h
-    cloudflarebrowserlogin.cpp
     cloudflareaccess.cpp
     cloudflareaccessreply.h
     cloudflareaccessreply.cpp
@@ -314,7 +303,7 @@ target_compile_features(nextcloudsync
 )
 
 target_compile_definitions(nextcloudsync PRIVATE OPENSSL_SUPPRESS_DEPRECATED)
-target_compile_definitions(nextcloudsync PRIVATE QT_NO_KEYWORDS CLOUDFLARED_HELPER_SHA256="${CLOUDFLARED_HELPER_SHA256}")
+target_compile_definitions(nextcloudsync PRIVATE QT_NO_KEYWORDS)
 
 if (NOT TOKEN_AUTH_ONLY)
     find_package(Qt${QT_MAJOR_VERSION} COMPONENTS REQUIRED Widgets Svg)

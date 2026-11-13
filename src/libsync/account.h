@@ -55,7 +55,6 @@ namespace OCC {
 
 class AbstractCredentials;
 class AccessManager;
-class CloudflareAccess;
 class SimpleNetworkJob;
 class PushNotifications;
 class UserStatusConnector;
@@ -162,7 +161,6 @@ public:
 
     /// The internal id of the account.
     [[nodiscard]] QString id() const;
-    [[nodiscard]] CloudflareAccess *browserAccess();
 
     /** Server url of the account */
     void setUrl(const QUrl &url);
@@ -558,7 +556,6 @@ private:
 
     QWeakPointer<Account> _sharedThis;
     QString _id;
-    CloudflareAccess *_browserAccess = nullptr;
     QString _davUser;
     QString _davDisplayName;
     QString _displayName;

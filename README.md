@@ -17,15 +17,11 @@ Releases target Windows x64. Installers are unsigned. This fork disables the off
 2. Sign in with your **再バ同アカウント** in the browser using a passkey or email code.
 3. Approve the device in Nextcloud, then choose the folders to sync.
 
-The installer includes Cloudflare's login component. Members need no Client ID, Client Secret, WARP or separate command-line installation. When the Access session expires, open **Settings → Advanced**, select the account and choose **Browser sign-in**. The existing Nextcloud device password is retained.
-
 The server operator controls eligibility and must enable device authorization. The club's member UID review still applies. Other Cloudflare-protected servers can use administrator-issued service credentials through **Cloudflare Access…**.
 
 ## Credential handling
 
 Browser sessions are stored in the operating system's credential store, separately for each local account UUID and exact HTTPS origin. Each account retains its own Nextcloud device password. Reauthentication requires the same central identity used during setup.
-
-The bundled helper runs with a disposable private cache. Application and organization tokens written there are removed after completion or cancellation. The client checks the helper's pinned SHA-256 before starting it. HTTP diagnostics redact Access headers and cookies and omit protected request bodies. Cross-origin requests receive no Access token.
 
 To retire a device, revoke its Nextcloud application password and its Cloudflare session. Removing an account also clears its locally stored Access session. The legacy service-credential mode shares one origin's credentials within a profile.
 
@@ -42,8 +38,6 @@ The installation check uses NSIS's explicit all-users mode on a fresh 64-bit run
 **Sairibus CI** runs on every pull request and every push to `main`: the release-script tests and the Windows build, test suites and installation check used for releases. Each run keeps its installer as a workflow artifact for seven days. Branch protection for `main` should require the **Windows build** and **Release script tests** checks.
 
 The **Sairibus Windows release** workflow runs manually from `main`. It rejects other refs, stale source commits, invalid tags and existing tags. Publication rechecks `main` and the artifact checksums. Each publication is a regular GitHub release marked as Latest. Releases include `SHA256SUMS`, `build-info.json`, and the complete source archives.
-
-The installer bundles official cloudflared 2026.10.3, verified against [the pinned binary and source hashes](admin/club/cloudflared.json). Dependency license notices are collected from the authenticated Go modules and included with the helper. The silent installation check verifies the installed helper and notices.
 
 Release automation uses standard GitHub-hosted runners. No signing credentials or server credentials are required. Review changes through pull requests before running a release.
 

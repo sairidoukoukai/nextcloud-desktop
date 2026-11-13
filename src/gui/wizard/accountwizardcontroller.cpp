@@ -4,7 +4,6 @@
  */
 
 #include "wizard/accountwizardcontroller.h"
-#include "accessmanager.h"
 
 #include "account.h"
 #include "accountmanager.h"
@@ -104,14 +103,10 @@ bool localFolderContainsData(const QString &localSyncFolder)
 
 }
 
-AccountWizardController::AccountWizardController(QObject *parent,
-                                                 CloudflareAccess *cloudflareAccess,
-                                                 CloudflareAccess *browserSession,
-                                                 CloudflareBrowserLogin *browserLogin)
+AccountWizardController::AccountWizardController(QObject *parent, CloudflareAccess *cloudflareAccess)
     : QObject(parent)
     , _cloudflareAccess(cloudflareAccess ? cloudflareAccess : CloudflareAccess::instance())
-    , _browserSession(browserSession)
-    , _cloudflareAccessSettings(new CloudflareAccessSettingsController(this, _cloudflareAccess, browserLogin))
+    , _cloudflareAccessSettings(new CloudflareAccessSettingsController(this, _cloudflareAccess))
     , _localNetworkPermissionCheck(LocalNetworkPermission::checkDeniedForConnection)
     , _localSyncFolderPicker([this](const QString &caption, const QString &startFolder, std::function<void(const QString &, const QByteArray &)> completion) {
         pickLocalSyncFolder(caption, startFolder, std::move(completion));
@@ -166,18 +161,6 @@ void AccountWizardController::initialiseAccount()
         }
     }
 
-    connect(_cloudflareAccessSettings, &CloudflareAccessSettingsController::browserFinished, this, [this](bool success) {
-        if (!_browserAccessPending) {
-            return;
-        }
-        _browserAccessPending = false;
-        setBusy(false);
-        if (success && _account) {
-            startServerCheck(QUrl(normalizeServerUrlInput(_serverUrl, _account->davPath()), QUrl::StrictMode));
-        } else {
-            setErrorText(_cloudflareAccessSettings->error());
-        }
-    });
     initialiseOverrideServerChoices();
 
     const auto defaultUrl =
@@ -214,11 +197,6 @@ void AccountWizardController::initialiseOverrideServerChoices()
     }
 }
 
-CloudflareAccess *AccountWizardController::browserSession() const
-{
-    return _browserSession ? _browserSession.data() : _account->browserAccess();
-}
-
 void AccountWizardController::ensureAccount()
 {
     if (_account) {
@@ -227,10 +205,6 @@ void AccountWizardController::ensureAccount()
 
     _account = AccountManager::createAccount();
     _account->setCredentials(CredentialsFactory::create("dummy"));
-    _cloudflareAccessSettings->setBrowserAccess(browserSession());
-    if (const auto manager = qobject_cast<AccessManager *>(_account->networkAccessManager())) {
-        manager->setBrowserAccess(browserSession());
-    }
 }
 
 AccountWizardController::Step AccountWizardController::currentStep() const
@@ -790,18 +764,6 @@ void AccountWizardController::submitServerUrl()
     setBasicAuthPassword({});
     normalizedServerUrl = normalizeServerUrlInput(_serverUrl, _account->davPath());
     const auto accountUrl = QUrl(normalizedServerUrl, QUrl::StrictMode);
-    if (CloudflareAccess::origin(accountUrl) == QUrl("https://nc.sairibus.com"_L1) && (!browserSession()->enabled() || !browserSession()->ready())) {
-        if (_cloudflareAccessSettings->busy()) {
-            setErrorText(tr("Saved sign-in is still loading. Please try again in a moment."));
-            return;
-        }
-        setServerUrl(accountUrl.toString());
-        _browserAccessPending = true;
-        setBusy(true);
-        setErrorText({});
-        _cloudflareAccessSettings->signInBrowser(accountUrl.toString());
-        return;
-    }
     if (const auto error = cloudflareAccessError(accountUrl); !error.isEmpty()) {
         setErrorText(error);
         return;
@@ -812,12 +774,11 @@ void AccountWizardController::submitServerUrl()
 
 QString AccountWizardController::cloudflareAccessError(const QUrl &url) const
 {
-    const auto access = _account && browserSession()->enabled() ? browserSession() : _cloudflareAccess;
-    if (!access->protects(url)) {
+    if (!_cloudflareAccess->protects(url)) {
         return {};
     }
-    if (!access->ready()) {
-        return access->error().isEmpty() ? tr("Cloudflare Access credentials are still loading. Please try again.") : access->error();
+    if (!_cloudflareAccess->ready()) {
+        return _cloudflareAccess->error().isEmpty() ? tr("Cloudflare Access credentials are still loading. Please try again.") : _cloudflareAccess->error();
     }
 #ifdef BUILD_FILE_PROVIDER_MODULE
     if (isUsingFileProvider()) {
@@ -882,10 +843,6 @@ void AccountWizardController::startServerCheck(const QUrl &serverUrl)
 {
     _account->setUrl(serverUrl);
     _account->setCredentials(CredentialsFactory::create("dummy"));
-    _cloudflareAccessSettings->setBrowserAccess(browserSession());
-    if (const auto manager = qobject_cast<AccessManager *>(_account->networkAccessManager())) {
-        manager->setBrowserAccess(browserSession());
-    }
     const auto proxyType = proxySettingsAvailable() ? _proxySettings._proxyType : QNetworkProxy::NoProxy;
     _account->setProxyType(proxyType);
 
@@ -1395,11 +1352,6 @@ void AccountWizardController::fetchRootFolderSize()
 
 void AccountWizardController::cancel()
 {
-    _browserAccessPending = false;
-    _cloudflareAccessSettings->cancelBrowserSignIn();
-    if (_account) {
-        browserSession()->clear();
-    }
     Q_EMIT finished(QDialog::Rejected);
 }
 
@@ -2295,7 +2247,7 @@ void AccountWizardController::clearClientCertificateInput()
 
 bool AccountWizardController::checkDowngradeAdvised(QNetworkReply *reply) const
 {
-    if (!reply || reply->url().scheme() != "https"_L1 || _cloudflareAccess->protects(reply->url()) || (_account && browserSession()->protects(reply->url()))) {
+    if (!reply || reply->url().scheme() != "https"_L1 || _cloudflareAccess->protects(reply->url())) {
         return false;
     }
 
