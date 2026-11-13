@@ -13,6 +13,8 @@
 #include "configfile.h"
 #include "creds/abstractcredentials.h"
 #include "creds/httpcredentials.h"
+#include "deviceauthorization.h"
+#include "devicesession.h"
 #include "logger.h"
 #include "networkjobs.h"
 #include "ocsnavigationappsjob.h"
@@ -100,6 +102,33 @@ AccountState::AccountState(const AccountPtr &account)
     const auto accessManager = qobject_cast<AccessManager *>(account->networkAccessManager());
     const auto access = accessManager ? accessManager->cloudflareAccess() : CloudflareAccess::instance();
     connect(access, &CloudflareAccess::configurationChanged, this, [this] {
+        if (!isSignedOut()) {
+            checkConnectivity();
+        }
+    });
+
+    const auto session = account->deviceSession();
+    connect(session, &DeviceSession::statusChanged, this, [this] {
+        const auto status = _account->deviceSession()->status();
+        if (_waitingForDeviceToken && (status == DeviceSession::Status::Absent || status == DeviceSession::Status::Lost)) {
+            _waitingForDeviceToken = false;
+            checkConnectivity();
+        }
+    });
+    connect(session, &DeviceSession::tokenRefreshed, this, [this] {
+        if (_waitingForDeviceToken || _state == NetworkError) {
+            _waitingForDeviceToken = false;
+            checkConnectivity();
+        }
+    });
+    connect(session, &DeviceSession::refreshFailed, this, [this] {
+        if (_waitingForDeviceToken && !isSignedOut()) {
+            _waitingForDeviceToken = false;
+            _connectionErrors = {_account->deviceSession()->error()};
+            setState(NetworkError);
+        }
+    });
+    connect(session, &DeviceSession::sessionLost, this, [this] {
         if (!isSignedOut()) {
             checkConnectivity();
         }
@@ -297,6 +326,9 @@ void AccountState::trySignIn()
 
 void AccountState::systemOnlineConfigurationChanged()
 {
+    if (_account->deviceSession()->appliesTo(_account->url())) {
+        _account->deviceSession()->networkChanged();
+    }
     QMetaObject::invokeMethod(this, "slotCheckConnection", Qt::QueuedConnection);
 }
 
@@ -338,6 +370,10 @@ void AccountState::checkConnectivity()
     if (isConnected() && _timeOfLastETagCheck.isValid()
         && elapsed <= polltime.count()) {
         qCDebug(lcAccountState) << account()->displayName() << "The last ETag check succeeded within the last " << polltime.count() << "s (" << elapsed << "s). No connection check needed!";
+        return;
+    }
+
+    if (!ensureDeviceSession()) {
         return;
     }
 
@@ -432,6 +468,12 @@ void AccountState::slotConnectionValidatorResult(ConnectionValidator::Status sta
 
             // Setup push notifications after a successful connection
             account()->trySetupPushNotifications();
+
+            // An account that signed in again syncs with its online grant until
+            // its own offline session follows in the same browser session.
+            if (_account->deviceSession()->appliesTo(_account->url()) && _account->deviceSession()->status() == DeviceSession::Status::Online) {
+                startDeviceSignIn(true, true);
+            }
         }
         break;
     case ConnectionValidator::Undefined:
@@ -486,6 +528,13 @@ void AccountState::slotConnectionValidatorResult(ConnectionValidator::Status sta
 
 void AccountState::slotHandleRemoteWipeCheck()
 {
+    // The club's Nextcloud has no remote wipe. Its devices take a new app password with the current device token.
+    if (_account->deviceSession()->appliesTo(_account->url())) {
+        qCInfo(lcAccountState) << "The app password of" << _account->url().toString() << "was refused; asking for a new one";
+        handleInvalidCredentials();
+        return;
+    }
+
     // make sure it changes account state and icons
     signOutByUi();
 
@@ -493,6 +542,85 @@ void AccountState::slotHandleRemoteWipeCheck()
                            << "checking for remote wipe request";
 }
 
+
+bool AccountState::ensureDeviceSession()
+{
+    const auto session = _account->deviceSession();
+    if (!session->appliesTo(_account->url())) {
+        return true;
+    }
+    if (_waitingForDeviceSignIn) {
+        return false;
+    }
+    switch (session->status()) {
+    case DeviceSession::Status::Unloaded:
+        _waitingForDeviceToken = true;
+        session->load();
+        return false;
+    case DeviceSession::Status::Loading:
+        _waitingForDeviceToken = true;
+        return false;
+    case DeviceSession::Status::Absent:
+        // Sign in from the start so the browser step of a new app password can reuse the browser session.
+        startDeviceSignIn(false);
+        return false;
+    case DeviceSession::Status::Lost:
+        startDeviceSignIn(true);
+        return false;
+    case DeviceSession::Status::Online:
+    case DeviceSession::Status::Offline:
+        if (session->hasFreshToken()) {
+            return true;
+        }
+        // A failed renewal waits for its backoff; the next renewal reconnects the account.
+        _waitingForDeviceToken = true;
+        if (!session->backingOff()) {
+            session->refresh();
+        }
+        return false;
+    }
+    return false;
+}
+
+void AccountState::startDeviceSignIn(bool offlineGrantOnly, bool background)
+{
+    if (!_deviceEnrollment) {
+        _deviceEnrollment = new DeviceEnrollment(_account->deviceSession(), this);
+        connect(_deviceEnrollment, &DeviceEnrollment::onlineSignedIn, this, [this] {
+            _waitingForDeviceSignIn = false;
+            setState(Disconnected);
+            checkConnectivity();
+        });
+        connect(_deviceEnrollment, &DeviceEnrollment::offlineReady, this, [this] {
+            qCInfo(lcAccountState) << "Stored the offline session of" << _account->url().toString();
+            if (std::exchange(_waitingForDeviceSignIn, false)) {
+                setState(Disconnected);
+                checkConnectivity();
+            }
+        });
+        connect(_deviceEnrollment, &DeviceEnrollment::failed, this, [this](const QString &error) {
+            qCWarning(lcAccountState) << "Device sign-in failed for" << _account->url().toString() << error;
+            if (std::exchange(_waitingForDeviceSignIn, false)) {
+                _connectionErrors = {error};
+                setState(SignedOut);
+            }
+        });
+    }
+    if (_deviceEnrollment->busy()) {
+        return;
+    }
+    if (!background) {
+        // Requests cannot authenticate until this finishes; a failure signs the account out until the member signs in again.
+        _waitingForDeviceSignIn = true;
+        setState(AskingCredentials);
+    }
+    if (!offlineGrantOnly) {
+        _deviceEnrollment->signInOnline();
+    } else {
+        // After an online sign-in the browser session usually still exists; an ended offline session asks at once.
+        _deviceEnrollment->completeOffline(background);
+    }
+}
 
 void AccountState::handleInvalidCredentials()
 {

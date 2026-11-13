@@ -26,6 +26,7 @@ class AccountState;
 class Account;
 class AccountApp;
 class RemoteWipe;
+class DeviceEnrollment;
 
 using AccountStatePtr = QExplicitlySharedDataPointer<AccountState>;
 using AccountAppList = QList<AccountApp *>;
@@ -177,6 +178,10 @@ public Q_SLOTS:
 private:
     virtual void setState(State state);
     void fetchNavigationApps();
+    /** Whether the device session can authenticate requests now; otherwise starts what it needs and reports false. */
+    bool ensureDeviceSession();
+    /** Runs the device sign-in. A background run follows a connection and never signs the account out. */
+    void startDeviceSignIn(bool offlineGrantOnly, bool background = false);
 
     int retryCount() const;
     void increaseRetryCount();
@@ -241,6 +246,10 @@ private:
      * the log out triggers the check (loads app password -> create request)
      */
     RemoteWipe *_remoteWipe = nullptr;
+
+    DeviceEnrollment *_deviceEnrollment = nullptr;
+    bool _waitingForDeviceToken = false;
+    bool _waitingForDeviceSignIn = false;
 
     /**
      * Holds the App names and URLs available on the server

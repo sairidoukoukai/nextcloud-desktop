@@ -5,6 +5,7 @@
  */
 
 #include <QJsonDocument>
+#include "devicesession.h"
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QLoggingCategory>
@@ -93,6 +94,11 @@ void ConnectionValidator::systemProxyLookupDone(const QNetworkProxy &proxy)
 
 void ConnectionValidator::slotCheckRedirectCostFreeUrl()
 {
+    // Devices reach only the club gateway's device paths, which exclude the captive portal check.
+    if (DeviceSession::requiredFor(_account->url())) {
+        slotCheckServerAndAuth();
+        return;
+    }
     const auto checkJob = new CheckRedirectCostFreeUrlJob(_account, this);
     checkJob->setTimeout(timeoutToUseMsec);
     checkJob->setIgnoreCredentialFailure(true);
@@ -170,7 +176,9 @@ void ConnectionValidator::slotNoStatusFound(QNetworkReply *reply)
     }
 
     QString error;
-    if (!_account->credentials()->stillValid(reply)) {
+    if (DeviceSession::isTokenChallenge(reply)) {
+        error = deviceTokenRefusedError();
+    } else if (!_account->credentials()->stillValid(reply)) {
         // Note: Why would this happen on a status.php request?
         error = tr("Authentication error: Either username or password are wrong.");
     } else {
@@ -182,6 +190,11 @@ void ConnectionValidator::slotNoStatusFound(QNetworkReply *reply)
         _errors.append(denied ? LocalNetworkPermission::deniedError() : error);
         reportResult(StatusNotFound);
     });
+}
+
+QString ConnectionValidator::deviceTokenRefusedError()
+{
+    return tr("The server refused this computer's sign-in. Check that your account can still use Nextcloud.");
 }
 
 void ConnectionValidator::slotJobTimeout(const QUrl &url)
@@ -227,6 +240,9 @@ void ConnectionValidator::slotAuthFailed(QNetworkReply *reply)
         _errors << job->errorStringParsingBody();
         stat = SslError;
 
+    } else if (DeviceSession::isTokenChallenge(reply)) {
+        _errors << deviceTokenRefusedError();
+        stat = Timeout;
     } else if (reply->error() == QNetworkReply::AuthenticationRequiredError && reply->request().hasRawHeader("CF-Access-Client-Id")) {
         _errors << tr("Cloudflare Access or Nextcloud rejected the request. Checking the service token before requesting a new Nextcloud login.");
         stat = Timeout;

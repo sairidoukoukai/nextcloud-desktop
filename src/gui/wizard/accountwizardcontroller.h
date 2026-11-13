@@ -32,6 +32,7 @@ class AccountState;
 class FolderDefinition;
 class CloudflareAccessSettingsController;
 class CloudflareAccess;
+class DeviceEnrollment;
 
 namespace Utility
 {
@@ -104,6 +105,7 @@ class AccountWizardController : public QObject
     Q_PROPERTY(bool clientCertificateValid READ clientCertificateValid NOTIFY clientCertificateChanged)
     Q_PROPERTY(QObject *cloudflareAccess READ cloudflareAccess CONSTANT)
     Q_PROPERTY(QString cloudflareServerUrl READ cloudflareServerUrl NOTIFY serverUrlChanged)
+    Q_PROPERTY(bool deviceSignIn READ deviceSignIn NOTIFY serverUrlChanged)
 
 public:
     [[nodiscard]] QObject *cloudflareAccess() const;
@@ -135,6 +137,8 @@ public:
     [[nodiscard]] Step currentStep() const;
     [[nodiscard]] QString serverUrl() const;
     [[nodiscard]] QString cloudflareServerUrl() const;
+    /** Whether the entered server signs devices in through the club's identity provider. */
+    [[nodiscard]] bool deviceSignIn() const;
     void setServerUrl(const QString &serverUrl);
     [[nodiscard]] bool serverUrlEditable() const;
     [[nodiscard]] bool overrideServerSelectionRequired() const;
@@ -279,6 +283,11 @@ private Q_SLOTS:
 private:
     CloudflareAccess *_cloudflareAccess;
     CloudflareAccessSettingsController *_cloudflareAccessSettings;
+    DeviceEnrollment *deviceEnrollment();
+    void finishDeviceSignIn(bool success, const QString &error = {});
+    QPointer<DeviceEnrollment> _deviceEnrollment;
+    QString _pendingUser;
+    QString _pendingAppPassword;
     using LocalNetworkPermissionCheck = std::function<void(const QUrl &, QObject *, std::function<void(bool)>)>;
     // Reports the chosen folder, or an empty path when cancelled, and its security-scoped bookmark if any.
     using LocalSyncFolderPicker = std::function<void(const QString &, const QString &, std::function<void(const QString &, const QByteArray &)>)>;

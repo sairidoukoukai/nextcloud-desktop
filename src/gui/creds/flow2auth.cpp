@@ -7,6 +7,7 @@
 
 #include "abstractnetworkjob.h"
 #include "account.h"
+#include "creds/abstractcredentials.h"
 #include "config.h"
 #include "guiutility.h"
 #include "httplogger.h"
@@ -26,8 +27,19 @@ namespace OCC {
 Q_LOGGING_CATEGORY(lcFlow2auth, "nextcloud.sync.credentials.flow2auth", QtInfoMsg)
 
 namespace {
-constexpr auto loginFlowPollIntervalSeconds = 3LL;
+constexpr auto loginFlowPollIntervalSeconds = 2LL;
 constexpr auto pollTimerIntervalMilliseconds = 1000;
+// Nextcloud keeps a login flow for 20 minutes.
+constexpr auto loginFlowLifetime = std::chrono::minutes(20);
+
+// The app password comes from this flow alone: no stale password or cookie may accompany it.
+void prepareFlowRequest(QNetworkRequest &request)
+{
+    request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
+    request.setAttribute(AbstractCredentials::DontAddCredentialsAttribute, true);
+    request.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
+    request.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
+}
 }
 
 Flow2Auth::Flow2Auth(Account *account, QObject *parent)
@@ -80,7 +92,7 @@ void Flow2Auth::fetchNewToken(const TokenAction action)
 
     // add 'Content-Length: 0' header (see https://github.com/nextcloud/desktop/issues/1473)
     QNetworkRequest request;
-    request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
+    prepareFlowRequest(request);
     request.setHeader(QNetworkRequest::ContentLengthHeader, "0");
     request.setHeader(QNetworkRequest::UserAgentHeader, Utility::userAgentString());
 
@@ -121,6 +133,7 @@ void Flow2Auth::fetchNewToken(const TokenAction action)
 
         _pollToken = pollToken;
         _pollEndpoint = pollEndpoint;
+        _flowStarted.start();
 
         // Start polling
         qCInfo(lcFlow2auth) << "setting login flow poll timer interval to" << _pollTimer.interval() << "msec";
@@ -161,6 +174,14 @@ void Flow2Auth::slotPollTimerTimeout()
 
     _isBusy = true;
 
+    if (_flowStarted.isValid() && _flowStarted.durationElapsed() > loginFlowLifetime) {
+        _pollTimer.stop();
+        _isBusy = false;
+        _hasToken = false;
+        Q_EMIT result(Error, tr("The sign-in expired. Start it again."));
+        return;
+    }
+
     _secondsLeft--;
     if(_secondsLeft > 0) {
         Q_EMIT statusChanged(PollStatus::statusPollCountdown, _secondsLeft);
@@ -171,7 +192,7 @@ void Flow2Auth::slotPollTimerTimeout()
 
     // Step 2: Poll
     QNetworkRequest request;
-    request.setAttribute(HttpLogger::SensitiveBodyAttribute, true);
+    prepareFlowRequest(request);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
 
     auto requestBody = new QBuffer;
@@ -182,6 +203,15 @@ void Flow2Auth::slotPollTimerTimeout()
     job->setTimeout(qMin(30 * 1000ll, job->timeoutMsec()));
 
     QObject::connect(job, &SimpleNetworkJob::finishedSignal, this, [this](QNetworkReply *reply) {
+        // 404 means the browser has not granted access yet; 403 means this flow cannot succeed.
+        if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 403) {
+            qCWarning(lcFlow2auth) << "The server refused the login flow poll";
+            _pollTimer.stop();
+            _isBusy = false;
+            _hasToken = false;
+            Q_EMIT result(Error, tr("The server refused this sign-in. Start it again."));
+            return;
+        }
         const QJsonObject json = handleResponse(reply);
         QUrl serverUrl;
         QString loginName, appPassword;

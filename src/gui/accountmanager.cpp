@@ -5,6 +5,7 @@
  */
 
 #include "accountmanager.h"
+#include "devicesession.h"
 
 #include "config.h"
 #include "sslerrordialog.h"
@@ -810,7 +811,12 @@ void AccountManager::removeAccountState(OCC::AccountState *account, AccountRemov
     _accounts.erase(it);
 
     if (removalMode == AccountRemovalMode::ForgetSensitiveData) {
-        account->account()->deleteAppToken();
+        if (const auto session = account->account()->deviceSession(); session->appliesTo(account->account()->url())) {
+            // Revokes the offline session first, then deletes the app password with the last device token.
+            session->retire(account->account()->credentials()->user(), account->account()->credentials()->password());
+        } else {
+            account->account()->deleteAppToken();
+        }
 
         // Forget account credentials, cookies
         account->account()->credentials()->forgetSensitiveData();
