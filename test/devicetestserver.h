@@ -173,10 +173,10 @@ inline QByteArray jwt(int number)
         + ".c2lnbmF0dXJl"_ba;
 }
 
-inline QByteArray jwtFor(const QString &subject)
+inline QByteArray jwtFor(const QString &subject, int number = 0)
 {
     return "eyJhbGciOiJSUzI1NiJ9."_ba
-        + QJsonDocument(QJsonObject{{u"sub"_s, subject}}).toJson(QJsonDocument::Compact).toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)
+        + QJsonDocument(QJsonObject{{u"sub"_s, subject}, {u"n"_s, number}}).toJson(QJsonDocument::Compact).toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)
         + ".c2lnbmF0dXJl"_ba;
 }
 
@@ -208,6 +208,7 @@ public:
     QByteArray lastRefresh;
     QList<QByteArray> revoked;
     HttpTestServer::Handler refreshOverride;
+    QString subject; ///< The signed-in member, carried in access tokens when set.
 
     explicit FakeIdentity(QStringList *eventLog)
         : log(eventLog)
@@ -235,7 +236,7 @@ public:
     HttpResponse issue(const QString &scope)
     {
         ++issued;
-        lastAccess = jwt(issued);
+        lastAccess = subject.isEmpty() ? jwt(issued) : jwtFor(subject, issued);
         lastRefresh = "refresh-" + QByteArray::number(issued) + (scope.contains("offline_access"_L1) ? "-offline" : "");
         accessTokens.insert(lastAccess);
         seed(lastRefresh, scope);

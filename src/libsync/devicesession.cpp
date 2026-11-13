@@ -134,7 +134,7 @@ QByteArray storedRefreshToken(const QByteArray &data, const QUrl &issuer)
     return printable(token) && stored.value("issuer"_L1).toString() == issuer.toString() ? token : QByteArray{};
 }
 
-QString subjectOf(const QByteArray &accessToken)
+QString accessTokenSubject(const QByteArray &accessToken)
 {
     const auto payload = accessToken.split('.').value(1);
     return QJsonDocument::fromJson(QByteArray::fromBase64(payload, QByteArray::Base64UrlEncoding)).object().value("sub"_L1).toString();
@@ -306,6 +306,30 @@ std::optional<DeviceTokens> DeviceTokens::parse(const QByteArray &body, QString 
     return tokens;
 }
 
+static QSet<const DeviceSession *> &liveSessions()
+{
+    static auto sessions = QSet<const DeviceSession *>();
+    return sessions;
+}
+
+QString DeviceSession::subjectOf(const DeviceTokens &tokens)
+{
+    return accessTokenSubject(tokens.accessToken);
+}
+
+bool DeviceSession::subjectUsedElsewhere(const QString &subject) const
+{
+    if (subject.isEmpty()) {
+        return false;
+    }
+    for (const auto session : std::as_const(liveSessions())) {
+        if (session != this && session->_subject == subject && session->_status != Status::Absent && session->_endpoints.issuer == _endpoints.issuer) {
+            return true;
+        }
+    }
+    return false;
+}
+
 DeviceSession::Endpoints DeviceSession::defaultEndpoints()
 {
     return configuredEndpoints();
@@ -373,6 +397,7 @@ DeviceSession::DeviceSession(QObject *parent, CredentialStore store, const Endpo
     , _store(std::move(store))
     , _endpoints(endpoints)
 {
+    liveSessions().insert(this);
     _network.setRedirectPolicy(QNetworkRequest::ManualRedirectPolicy);
     _expiryTimer.setSingleShot(true);
     connect(&_expiryTimer, &QTimer::timeout, this, &DeviceSession::ensureFresh);
@@ -394,6 +419,7 @@ DeviceSession::DeviceSession(QObject *parent, CredentialStore store, const Endpo
 
 DeviceSession::~DeviceSession()
 {
+    liveSessions().remove(this);
     ++_generation;
     _waiters.clear();
     if (_refreshReply) {
@@ -546,7 +572,7 @@ void DeviceSession::load()
 void DeviceSession::adoptOnline(const DeviceTokens &tokens)
 {
     cancelRefresh();
-    _subject = subjectOf(tokens.accessToken);
+    _subject = accessTokenSubject(tokens.accessToken);
     _refreshToken = tokens.refreshToken;
     _error.clear();
     _failures = 0;
@@ -565,7 +591,7 @@ void DeviceSession::adoptOffline(const DeviceTokens &tokens, std::function<void(
         return;
     }
     // A browser signed in to another club account must not take over this account.
-    const auto subject = subjectOf(tokens.accessToken);
+    const auto subject = accessTokenSubject(tokens.accessToken);
     if (!_subject.isEmpty() && subject != _subject) {
         qCWarning(lcDeviceSession) << "The offline grant belongs to another account";
         done(false, tr("The browser is signed in to a different account. Sign in with the account used for this computer."));

@@ -15,6 +15,7 @@
 #include <QNetworkRequest>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QStringList>
 #include <QTimer>
 #include <QUrl>
@@ -85,6 +86,14 @@ public:
     /** A 401 whose Bearer challenge asks for a new device token; the app password is unaffected. */
     [[nodiscard]] static bool isTokenChallenge(const QNetworkReply *reply);
     static void removeToken(QNetworkRequest &request);
+    /** The member whose sign-in @p tokens carry. */
+    [[nodiscard]] static QString subjectOf(const DeviceTokens &tokens);
+    /**
+     * Whether another account on this computer already holds a sign-in for @p subject.
+     * Keycloak gives both accounts one offline session: rotating or revoking one
+     * refresh token would end the other.
+     */
+    [[nodiscard]] bool subjectUsedElsewhere(const QString &subject) const;
     /** Logs the gateway's refusal of a device request outside the device paths; such a request is a client bug. */
     static void reportRefusedPath(QNetworkReply *reply);
 

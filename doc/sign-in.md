@@ -17,6 +17,9 @@ in a row:
 The browser reuses the first sign-in for the later pages, so one email code is
 enough. Keep the same browser open until the wizard continues.
 
+Each club account can be added once per computer. To add a second club account,
+sign out of the first one in the browser before starting the wizard.
+
 ## What the client keeps
 
 Each account on this computer keeps two credentials in the Windows credential

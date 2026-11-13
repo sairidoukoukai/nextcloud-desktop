@@ -700,6 +700,36 @@ private Q_SLOTS:
         QTRY_COMPARE(_identity->revoked, (QList<QByteArray>{"refresh-late-offline"}));
         QCOMPARE(session.status(), DeviceSession::Status::Absent);
     }
+
+    void oneAccountPerMember()
+    {
+        // The member already has an account on this computer.
+        DeviceSession first(nullptr, memoryStore(_store, &_log));
+        first.setStorageKey([] {
+            return u"first-entry"_s;
+        });
+        first.adoptOffline(seededTokens(jwtFor(u"alice"_s), "refresh-alice-offline"));
+        QCOMPARE(first.status(), DeviceSession::Status::Offline);
+
+        DeviceSession second(nullptr, memoryStore(_store, &_log));
+        second.setStorageKey([] {
+            return u"second-entry"_s;
+        });
+        DeviceEnrollment enrollment(&second);
+        QSignalSpy failed(&enrollment, &DeviceEnrollment::failed);
+        QSignalSpy online(&enrollment, &DeviceEnrollment::onlineSignedIn);
+        _identity->subject = u"alice"_s;
+        enrollment.signInOnline();
+        QTRY_COMPARE(failed.size(), 1);
+        QCOMPARE(online.size(), 0);
+        QCOMPARE(second.status(), DeviceSession::Status::Unloaded);
+
+        // Another member signs in normally.
+        _identity->subject = u"bob"_s;
+        enrollment.signInOnline();
+        QTRY_COMPARE(online.size(), 1);
+        QCOMPARE(second.status(), DeviceSession::Status::Online);
+    }
 };
 
 int main(int argc, char *argv[])

@@ -322,6 +322,11 @@ void DeviceEnrollment::authorizationFinished(DeviceAuthorization::Outcome outcom
         Q_EMIT failed(_authorization->error());
         return;
     }
+    if (_session->subjectUsedElsewhere(DeviceSession::subjectOf(_authorization->tokens()))) {
+        // One member, one account per computer: two accounts would share one offline session.
+        Q_EMIT failed(tr("This club account is already connected on this computer. Sign out of it in the browser to add another account."));
+        return;
+    }
     if (phase == Phase::Online) {
         _session->adoptOnline(_authorization->tokens());
         Q_EMIT onlineSignedIn();
