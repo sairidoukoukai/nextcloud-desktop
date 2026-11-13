@@ -58,6 +58,8 @@ public:
     void persist() override;
     void invalidateToken() override;
     void forgetSensitiveData() override;
+    /** Forgets the app password and its login name, which belong to someone else, and returns to @p user. */
+    void forgetSignIn(const QString &user);
 
     // To fetch the user name as early as possible
     void setAccount(Account *account) override;

@@ -15,6 +15,7 @@
 #include <QPointer>
 #include <QTimer>
 
+#include <functional>
 #include <memory>
 
 class QSettings;
@@ -165,6 +166,11 @@ public:
     void setDesktopNotificationsAllowed(bool isAllowed);
 
     ConnectionStatus lastConnectionStatus() const;
+
+    /** Answers whether an account may keep its folders under a new Nextcloud user ID. */
+    using UserChangeConfirmation = std::function<void(const QString &previousUser, const QString &user, const QString &displayName, std::function<void(bool)> done)>;
+    /** Replaces the dialog that confirms a user change. Tests answer without a window. */
+    static void setUserChangeConfirmation(UserChangeConfirmation confirmation);
     
     void trySignIn();
 
@@ -182,6 +188,11 @@ private:
     bool ensureDeviceSession();
     /** Runs the device sign-in. A background run follows a connection and never signs the account out. */
     void startDeviceSignIn(bool offlineGrantOnly, bool background = false);
+    /**
+     * Before connecting to the club's Nextcloud, adopts the user ID the server reports
+     * for the app password when it differs from the stored one, then checks connectivity again.
+     */
+    void checkServerUser();
 
     int retryCount() const;
     void increaseRetryCount();
@@ -250,6 +261,15 @@ private:
     DeviceEnrollment *_deviceEnrollment = nullptr;
     bool _waitingForDeviceToken = false;
     bool _waitingForDeviceSignIn = false;
+    /** The account signed in again without an earlier device session, so nothing ties the browser's member to this account yet. */
+    bool _deviceMemberUnverified = false;
+    /** The server reported the account's user ID for the current app password, or accepted a connection with it. */
+    bool _serverUserChecked = false;
+    /** The last check could not read the user ID; the next connection attempt goes ahead without it. */
+    bool _serverUserCheckFailed = false;
+    bool _checkingServerUser = false;
+    /** Counts checks so that a check made for replaced credentials is ignored. */
+    quint64 _serverUserCheck = 0;
 
     /**
      * Holds the App names and URLs available on the server

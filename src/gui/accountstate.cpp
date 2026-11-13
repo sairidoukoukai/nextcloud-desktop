@@ -13,6 +13,7 @@
 #include "configfile.h"
 #include "creds/abstractcredentials.h"
 #include "creds/httpcredentials.h"
+#include "creds/webflowcredentials.h"
 #include "deviceauthorization.h"
 #include "devicesession.h"
 #include "logger.h"
@@ -22,7 +23,9 @@
 #include "pushnotifications.h"
 #include "remotewipe.h"
 #include "settings/migration.h"
+#include "theme.h"
 
+#include <QMessageBox>
 #include <QSettings>
 #include <QTimer>
 #include <QFontMetrics>
@@ -40,6 +43,32 @@ using namespace Qt::StringLiterals;
 namespace OCC {
 
 Q_LOGGING_CATEGORY(lcAccountState, "nextcloud.gui.account.state", QtInfoMsg)
+
+namespace
+{
+AccountState::UserChangeConfirmation &userChangeConfirmation()
+{
+    static auto confirmation = AccountState::UserChangeConfirmation([](const QString &previousUser, const QString &user, const QString &displayName, std::function<void(bool)> done) {
+        const auto box = new QMessageBox(QMessageBox::Question,
+                                         Theme::instance()->appNameGUI(),
+                                         AccountState::tr("Keep syncing these folders as %1 (%2)?").arg(displayName, user),
+                                         QMessageBox::Yes | QMessageBox::No);
+        box->setInformativeText(AccountState::tr("This account was set up for %1.").arg(previousUser));
+        box->setDefaultButton(QMessageBox::No);
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        QObject::connect(box, &QMessageBox::finished, box, [done](int result) {
+            done(result == QMessageBox::Yes);
+        });
+        box->open();
+    });
+    return confirmation;
+}
+}
+
+void AccountState::setUserChangeConfirmation(UserChangeConfirmation confirmation)
+{
+    userChangeConfirmation() = std::move(confirmation);
+}
 
 AccountState::AccountState(const AccountPtr &account)
     : QObject()
@@ -377,6 +406,18 @@ void AccountState::checkConnectivity()
         return;
     }
 
+    // Login Flow V2 may have stored an app password for a user ID the account does not use yet.
+    if (_account->deviceSession()->appliesTo(_account->url()) && !_serverUserChecked) {
+        if (_checkingServerUser) {
+            return;
+        }
+        // After a failed check this attempt goes ahead, so its errors show; the next attempt checks again.
+        if (!std::exchange(_serverUserCheckFailed, false)) {
+            checkServerUser();
+            return;
+        }
+    }
+
     auto *conValidator = new ConnectionValidator(AccountStatePtr(this), _connectionErrors);
     _connectionValidator = conValidator;
     _connectionErrors.clear();
@@ -456,9 +497,13 @@ void AccountState::slotConnectionValidatorResult(ConnectionValidator::Status sta
         Q_EMIT stateChanged(_state);
     }
     _connectionErrors = errors;
+    // A refused principal, or any other failure, checks the user ID again before the next attempt.
+    _serverUserChecked = status == ConnectionValidator::Connected;
 
     switch (status) {
     case ConnectionValidator::Connected:
+        // The server accepted this account's app password with the device token: the member is the account's own.
+        _deviceMemberUnverified = false;
         if (_state != Connected) {
             setState(Connected);
             resetRetryConnection();
@@ -562,6 +607,7 @@ bool AccountState::ensureDeviceSession()
         return false;
     case DeviceSession::Status::Absent:
         // Sign in from the start so the browser step of a new app password can reuse the browser session.
+        _deviceMemberUnverified = true;
         startDeviceSignIn(false);
         return false;
     case DeviceSession::Status::Lost:
@@ -675,7 +721,92 @@ void AccountState::slotCredentialsAsked(AbstractCredentials *credentials)
         _connectionValidator = nullptr;
     }
 
+    // A new app password may belong to another user ID.
+    ++_serverUserCheck;
+    _checkingServerUser = false;
+    _serverUserChecked = false;
+    _serverUserCheckFailed = false;
     checkConnectivity();
+}
+
+void AccountState::checkServerUser()
+{
+    _checkingServerUser = true;
+    const auto check = ++_serverUserCheck;
+    const auto job = new JsonApiJob(_account, QStringLiteral("ocs/v1.php/cloud/user"), this);
+    job->setTimeout(20 * 1000);
+    // jsonReceived also reports network errors.
+    connect(job, &JsonApiJob::jsonReceived, this, [this, check](const QJsonDocument &json, int statusCode) {
+        // New credentials replaced the ones this check asked about.
+        if (check != _serverUserCheck) {
+            return;
+        }
+        const auto finish = [this] {
+            _checkingServerUser = false;
+            _serverUserChecked = true;
+            checkConnectivity();
+        };
+        const auto data = json.object().value("ocs"_L1).toObject().value("data"_L1).toObject();
+        const auto user = data.value("id"_L1).toString();
+        if (statusCode != 100 || user.isEmpty()) {
+            qCWarning(lcAccountState) << "Could not read the user ID of" << _account->url().toString() << "status" << statusCode
+                                      << "; checking again before the next connection attempt";
+            _checkingServerUser = false;
+            _serverUserCheckFailed = true;
+            checkConnectivity();
+            return;
+        }
+        const auto previousUser = _account->davUser();
+        if (user == previousUser) {
+            finish();
+            return;
+        }
+        const auto displayName = data.value("display-name"_L1).toString(user);
+        const auto adopt = [this, finish, previousUser, user, displayName] {
+            // Folder definitions hold paths relative to the user's files and their own
+            // journal paths; credentials are keyed by the login name. Only the DAV
+            // user changes, so the local folder setup stays as it is.
+            qCInfo(lcAccountState) << "The server now identifies" << previousUser << "as" << user << "; keeping the folders";
+            _deviceMemberUnverified = false;
+            _account->setDavUser(user);
+            _account->setDavDisplayName(displayName);
+            Q_EMIT _account->wantsAccountSaved(_account);
+            finish();
+        };
+        if (!_deviceMemberUnverified) {
+            // The app password came through this account's own device session.
+            adopt();
+            return;
+        }
+        // Nothing ties the browser's member to this account: ask before syncing its folders as them.
+        userChangeConfirmation()(previousUser, user, displayName, [self = QPointer<AccountState>(this), check, adopt, previousUser, user](bool accepted) {
+            // The account may have been removed, or signed in again, while the question was open.
+            if (!self || check != self->_serverUserCheck) {
+                return;
+            }
+            const auto state = self.data();
+            if (accepted) {
+                adopt();
+                return;
+            }
+            const auto account = state->_account;
+            const auto credentials = account->credentials();
+            qCWarning(lcAccountState) << "A different member signed in for" << account->url().toString() << "; signing out";
+            state->_checkingServerUser = false;
+            state->_deviceMemberUnverified = false;
+            account->deviceSession()->retire(credentials->user(), credentials->password());
+            // The login name belongs to the other member; the account keeps its own.
+            if (const auto webFlow = qobject_cast<WebFlowCredentials *>(credentials)) {
+                webFlow->forgetSignIn(previousUser);
+            } else {
+                credentials->forgetSensitiveData();
+            }
+            Q_EMIT account->wantsAccountSaved(account);
+            state->_connectionErrors = {tr("Signed in as %1, which does not own this account. Sign in with the account's own member.").arg(user)};
+            state->setState(SignedOut);
+        });
+    });
+    job->start();
 }
 
 std::unique_ptr<QSettings> AccountState::settings()

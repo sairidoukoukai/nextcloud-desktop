@@ -11,11 +11,15 @@
 #include "cloudflarenativecredentialstestutils.h"
 #include "cmd/simplesslerrorhandler.h"
 #include "configfile.h"
+#include "deviceauthorization.h"
+#include "devicesession.h"
+#include "devicetestserver.h"
 #include "networkjobs.h"
 #include "pushnotifications.h"
 #include "pushnotificationstestutils.h"
 #include "syncenginetestutils.h"
 
+#include <QDesktopServices>
 #include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -60,6 +64,105 @@ AccountPtr createPushAccount()
     return account;
 }
 
+// Club account credentials; loaded at once unless they wait for the keychain, as at start-up.
+class DeviceAccountCredentials : public FakeCredentials
+{
+public:
+    DeviceAccountCredentials(std::function<QNetworkAccessManager *()> network, const QString &user, bool loaded = true)
+        : FakeCredentials(nullptr)
+        , _network(std::move(network))
+    {
+        setUserName(user);
+        _wasFetched = loaded;
+    }
+
+    // Checking connectivity while disconnected replaces the account's network manager, so each call needs a new one.
+    [[nodiscard]] QNetworkAccessManager *createQNAM() const override { return _network(); }
+
+    void fetchFromKeychain(const QString &) override
+    {
+        _wasFetched = true;
+        Q_EMIT fetched();
+    }
+
+    // What Login Flow V2 does for an existing account: a new login name and app password.
+    void signInAgain(const QString &user)
+    {
+        setUserName(user);
+        Q_EMIT asked();
+    }
+
+private:
+    std::function<QNetworkAccessManager *()> _network;
+};
+
+// The club's Nextcloud as the account sees it: OCS reports the user ID of the app password, everything else is missing.
+struct ClubServer
+{
+    // Empty while the server refuses the account's app password.
+    QString userId;
+    // The next lookups that fail, as when the device token expired.
+    int failingLookups = 0;
+    int lookups = 0;
+};
+
+std::function<QNetworkAccessManager *()> clubServer(const std::shared_ptr<ClubServer> &server)
+{
+    return [server] {
+        auto qnam = new FakeQNAM({});
+        qnam->setOverride([qnam, server](QNetworkAccessManager::Operation operation, const QNetworkRequest &request, QIODevice *) -> QNetworkReply * {
+            if (request.url().path().endsWith("/ocs/v1.php/cloud/user"_L1)) {
+                ++server->lookups;
+                if (server->failingLookups > 0) {
+                    --server->failingLookups;
+                    return new FakeErrorReply(operation, request, qnam, 500);
+                }
+                if (server->userId.isEmpty()) {
+                    return new FakeErrorReply(operation, request, qnam, 401);
+                }
+                const auto body = QJsonDocument(QJsonObject{{u"ocs"_s, QJsonObject{{u"meta"_s, QJsonObject{{u"statuscode"_s, 100}}},
+                                                                                 {u"data"_s, QJsonObject{{u"id"_s, server->userId}, {u"display-name"_s, u"Member"_s}}}}}})
+                                      .toJson(QJsonDocument::Compact);
+                return new FakePayloadReply(operation, request, body, qnam);
+            }
+            return new FakeErrorReply(operation, request, qnam, 404);
+        });
+        return qnam;
+    };
+}
+
+std::shared_ptr<ClubServer> clubServerFor(const QString &userId)
+{
+    auto server = std::make_shared<ClubServer>();
+    server->userId = userId;
+    return server;
+}
+
+}
+
+/** The member's default browser, answering the club's sign-in page at once. */
+class AccountStateBrowser : public QObject
+{
+    Q_OBJECT
+
+public:
+    OCC::Test::FakeIdentity *identity = nullptr;
+    QList<QUrl> opened;
+    QNetworkAccessManager network;
+
+public Q_SLOTS:
+    void open(const QUrl &url)
+    {
+        opened.append(url);
+        if (identity && url.path().endsWith("/protocol/openid-connect/auth"_L1)) {
+            const auto reply = network.get(QNetworkRequest(identity->authorize(url)));
+            connect(reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
+        }
+    }
+};
+
+namespace
+{
 }
 
 class TestAccountState : public QObject
@@ -247,6 +350,233 @@ private Q_SLOTS:
         QCOMPARE(state.state(), requiresLogin ? AccountState::AskingCredentials : AccountState::Disconnected);
         QCOMPARE(credentials->ready(), !requiresLogin);
         QCOMPARE(server.requests.size(), delayedOriginal ? 1 : (change == "coalesced"_L1 ? 3 : 2));
+    }
+
+
+    void otherServersKeepTheStockSignIn()
+    {
+        AccountStateBrowser browser;
+        QDesktopServices::setUrlHandler(u"https"_s, &browser, "open");
+        QDesktopServices::setUrlHandler(u"http"_s, &browser, "open");
+        const auto restore = qScopeGuard([] {
+            QDesktopServices::unsetUrlHandler(u"https"_s);
+            QDesktopServices::unsetUrlHandler(u"http"_s);
+        });
+        const auto user = u"admin"_s;
+        const auto account = Account::create();
+        account->setUrl(QUrl(u"https://cloud.example"_s));
+        account->setCredentials(new DeviceAccountCredentials(clubServer(clubServerFor(user)), user));
+        // Jobs hold the state by AccountStatePtr, so it lives on the heap as in the client.
+        const auto state = AccountStatePtr(new AccountState(account));
+        QTest::qWait(300);
+        // No device sign-in and no browser for a server other than the club's.
+        QVERIFY(browser.opened.isEmpty());
+        QCOMPARE(account->deviceSession()->status(), DeviceSession::Status::Unloaded);
+        QVERIFY(state->state() != AccountState::AskingCredentials);
+    }
+
+    void clubAccountWithoutDeviceSessionSignsInAtStart()
+    {
+        AccountStateBrowser browser;
+        QDesktopServices::setUrlHandler(u"https"_s, &browser, "open");
+        const auto restore = qScopeGuard([] {
+            QDesktopServices::unsetUrlHandler(u"https"_s);
+            DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.sairibus.com"_s), QUrl(u"https://auth.sairibus.com/realms/sairibus"_s)});
+        });
+        DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.example"_s), QUrl(u"https://auth.example/realms/sairibus"_s)});
+        const auto user = u"cjyet-yo"_s;
+        const auto store = std::make_shared<QHash<QString, QByteArray>>();
+        const auto account = Account::create();
+        account->setUrl(QUrl(u"https://nc.example"_s));
+        account->setDavUser(user);
+        account->setCredentials(new DeviceAccountCredentials(clubServer(clubServerFor(user)), user));
+        account->deviceSession()->setCredentialStore([store](const QString &key, const std::optional<QByteArray> &data, DeviceSession::Completion done) {
+            if (data) { data->isEmpty() ? void(store->remove(key)) : void(store->insert(key, *data)); }
+            done(store->value(key), {});
+        });
+        // Jobs hold the state by AccountStatePtr, so it lives on the heap as in the client.
+        const auto state = AccountStatePtr(new AccountState(account));
+        // An account set up before device sign-in has no device session: the browser opens for step 1.
+        QTRY_COMPARE(browser.opened.size(), 1);
+        QCOMPARE(QUrlQuery(browser.opened[0]).queryItemValue(u"scope"_s, QUrl::FullyDecoded), u"openid"_s);
+        QCOMPARE(state->state(), AccountState::AskingCredentials);
+    }
+
+    void changedUserIdKeepsTheAccount_data()
+    {
+        QTest::addColumn<bool>("ownSession");
+        QTest::addColumn<bool>("confirmed");
+        QTest::newRow("device session of this account") << true << false;
+        QTest::newRow("first device sign-in, confirmed") << false << true;
+        QTest::newRow("first device sign-in, another member") << false << false;
+    }
+
+    void changedUserIdKeepsTheAccount()
+    {
+        QFETCH(bool, ownSession);
+        QFETCH(bool, confirmed);
+        QStringList log;
+        OCC::Test::FakeIdentity identity(&log);
+        identity.subject = u"7a13bcce-8c7e-4444-b935-f00d04665df9"_s;
+        AccountStateBrowser browser;
+        browser.identity = &identity;
+        QDesktopServices::setUrlHandler(u"http"_s, &browser, "open");
+        auto asked = QStringList();
+        AccountState::setUserChangeConfirmation([&asked, confirmed](const QString &previous, const QString &user, const QString &, std::function<void(bool)> done) {
+            asked = {previous, user};
+            done(confirmed);
+        });
+        const auto restore = qScopeGuard([] {
+            QDesktopServices::unsetUrlHandler(u"http"_s);
+            AccountState::setUserChangeConfirmation({});
+            DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.sairibus.com"_s), QUrl(u"https://auth.sairibus.com/realms/sairibus"_s)});
+        });
+        DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.example"_s), identity.issuer()});
+        // The server migrated this member's ID from cjyet-yo to the OUID u723741i and refuses the old app password.
+        const auto serverUser = u"u723741i"_s;
+        const auto server = clubServerFor({});
+        const auto store = std::make_shared<QHash<QString, QByteArray>>();
+        const auto account = Account::create();
+        account->setUrl(QUrl(u"https://nc.example"_s));
+        account->setDavUser(u"cjyet-yo"_s);
+        const auto credentials = new DeviceAccountCredentials(clubServer(server), u"cjyet-yo"_s);
+        account->setCredentials(credentials);
+        account->deviceSession()->setCredentialStore([store](const QString &key, const std::optional<QByteArray> &data, DeviceSession::Completion done) {
+            if (data) { data->isEmpty() ? void(store->remove(key)) : void(store->insert(key, *data)); }
+            done(store->value(key), {});
+        });
+        if (ownSession) {
+            identity.seed("refresh-own-offline");
+            auto tokens = DeviceTokens();
+            tokens.accessToken = OCC::Test::jwtFor(identity.subject, 1000);
+            tokens.refreshToken = "refresh-own-offline";
+            tokens.expiresAt = QDateTime::currentSecsSinceEpoch() + 300;
+            tokens.scopes = {u"openid"_s, u"offline_access"_s};
+            account->deviceSession()->adoptOffline(tokens);
+            QCOMPARE(account->deviceSession()->status(), DeviceSession::Status::Offline);
+        }
+        QSignalSpy saved(account.data(), &Account::wantsAccountSaved);
+        // Jobs hold the state by AccountStatePtr, so it lives on the heap as in the client.
+        const auto state = AccountStatePtr(new AccountState(account));
+        if (!ownSession) {
+            // Step 1 runs in the browser because the account has no device session yet.
+            QTRY_COMPARE(account->deviceSession()->status(), DeviceSession::Status::Online);
+        }
+        QTest::qWait(200);
+
+        QCOMPARE(account->davUser(), u"cjyet-yo"_s);
+
+        // Login Flow V2 issued a new app password for the member's current ID.
+        server->userId = serverUser;
+        credentials->signInAgain(serverUser);
+        if (ownSession || confirmed) {
+            QTRY_COMPARE(account->davUser(), u"u723741i"_s);
+            QVERIFY(saved.size() >= 1);
+            QVERIFY(account->davUrl().path().endsWith(u"/remote.php/dav/files/u723741i"_s) || account->davUrl().path().endsWith(u"/remote.php/dav/files/u723741i/"_s));
+            QCOMPARE(account->credentials()->user(), u"u723741i"_s);
+            QCOMPARE(asked, ownSession ? QStringList{} : (QStringList{u"cjyet-yo"_s, u"u723741i"_s}));
+        } else {
+            QTRY_COMPARE(state->state(), AccountState::SignedOut);
+            QCOMPARE(asked, (QStringList{u"cjyet-yo"_s, u"u723741i"_s}));
+            QCOMPARE(account->davUser(), u"cjyet-yo"_s);
+            QCOMPARE(account->deviceSession()->status(), DeviceSession::Status::Absent);
+        }
+    }
+
+    // A new app password stored by an earlier run, whose ID change was never adopted.
+    void storedSignInAdoptsTheServerUserAtStart_data()
+    {
+        QTest::addColumn<bool>("ownSession");
+        QTest::newRow("device session of this account") << true;
+        QTest::newRow("no device session yet") << false;
+    }
+
+    void storedSignInAdoptsTheServerUserAtStart()
+    {
+        QFETCH(bool, ownSession);
+        QStringList log;
+        OCC::Test::FakeIdentity identity(&log);
+        identity.subject = u"7a13bcce-8c7e-4444-b935-f00d04665df9"_s;
+        AccountStateBrowser browser;
+        browser.identity = &identity;
+        QDesktopServices::setUrlHandler(u"http"_s, &browser, "open");
+        auto asked = QStringList();
+        AccountState::setUserChangeConfirmation([&asked](const QString &previous, const QString &user, const QString &, std::function<void(bool)> done) {
+            asked = {previous, user};
+            done(true);
+        });
+        const auto restore = qScopeGuard([] {
+            QDesktopServices::unsetUrlHandler(u"http"_s);
+            AccountState::setUserChangeConfirmation({});
+            DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.sairibus.com"_s), QUrl(u"https://auth.sairibus.com/realms/sairibus"_s)});
+        });
+        DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.example"_s), identity.issuer()});
+        const auto store = std::make_shared<QHash<QString, QByteArray>>();
+        const auto account = Account::create();
+        account->setUrl(QUrl(u"https://nc.example"_s));
+        // The keychain holds the app password of u723741i; the account still syncs as cjyet-yo.
+        account->setDavUser(u"cjyet-yo"_s);
+        account->setCredentials(new DeviceAccountCredentials(clubServer(clubServerFor(u"u723741i"_s)), u"u723741i"_s, false));
+        account->deviceSession()->setCredentialStore([store](const QString &key, const std::optional<QByteArray> &data, DeviceSession::Completion done) {
+            if (data) { data->isEmpty() ? void(store->remove(key)) : void(store->insert(key, *data)); }
+            done(store->value(key), {});
+        });
+        if (ownSession) {
+            identity.seed("refresh-own-offline");
+            auto tokens = DeviceTokens();
+            tokens.accessToken = OCC::Test::jwtFor(identity.subject, 1000);
+            tokens.refreshToken = "refresh-own-offline";
+            tokens.expiresAt = QDateTime::currentSecsSinceEpoch() + 300;
+            tokens.scopes = {u"openid"_s, u"offline_access"_s};
+            account->deviceSession()->adoptOffline(tokens);
+        }
+        const auto state = AccountStatePtr(new AccountState(account));
+
+        QTRY_COMPARE(account->davUser(), u"u723741i"_s);
+        // Without a device session the browser signs in first, and the member confirms the change.
+        QCOMPARE(asked, ownSession ? QStringList{} : (QStringList{u"cjyet-yo"_s, u"u723741i"_s}));
+        QCOMPARE(browser.opened.isEmpty(), ownSession);
+    }
+
+    void failedUserLookupIsRetried()
+    {
+        QStringList log;
+        OCC::Test::FakeIdentity identity(&log);
+        identity.subject = u"7a13bcce-8c7e-4444-b935-f00d04665df9"_s;
+        const auto restore = qScopeGuard([] {
+            DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.sairibus.com"_s), QUrl(u"https://auth.sairibus.com/realms/sairibus"_s)});
+        });
+        DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.example"_s), identity.issuer()});
+        const auto server = clubServerFor(u"u723741i"_s);
+        server->failingLookups = 1;
+        const auto store = std::make_shared<QHash<QString, QByteArray>>();
+        const auto account = Account::create();
+        account->setUrl(QUrl(u"https://nc.example"_s));
+        account->setDavUser(u"cjyet-yo"_s);
+        account->setCredentials(new DeviceAccountCredentials(clubServer(server), u"u723741i"_s));
+        account->deviceSession()->setCredentialStore([store](const QString &key, const std::optional<QByteArray> &data, DeviceSession::Completion done) {
+            if (data) { data->isEmpty() ? void(store->remove(key)) : void(store->insert(key, *data)); }
+            done(store->value(key), {});
+        });
+        identity.seed("refresh-own-offline");
+        auto tokens = DeviceTokens();
+        tokens.accessToken = OCC::Test::jwtFor(identity.subject, 1000);
+        tokens.refreshToken = "refresh-own-offline";
+        tokens.expiresAt = QDateTime::currentSecsSinceEpoch() + 300;
+        tokens.scopes = {u"openid"_s, u"offline_access"_s};
+        account->deviceSession()->adoptOffline(tokens);
+        const auto state = AccountStatePtr(new AccountState(account));
+
+        // The lookup failed: this attempt connects with the stored ID and reports its error.
+        QTRY_COMPARE(state->state(), AccountState::NetworkError);
+        QCOMPARE(server->lookups, 1);
+        QCOMPARE(account->davUser(), u"cjyet-yo"_s);
+
+        // The next connection check looks the user up again.
+        QTest::qWait(50);
+        state->checkConnectivity();
+        QTRY_COMPARE(account->davUser(), u"u723741i"_s);
+        QCOMPARE(server->lookups, 2);
     }
 
     void initTestCase()
