@@ -85,6 +85,10 @@ public:
         Q_EMIT fetched();
     }
 
+    // Login Flow V2 in a window; the tests count how often it opens.
+    void askFromUser() override { ++askedFromUser; }
+    int askedFromUser = 0;
+
     // What Login Flow V2 does for an existing account: a new login name and app password.
     void signInAgain(const QString &user)
     {
@@ -577,6 +581,172 @@ private Q_SLOTS:
         state->checkConnectivity();
         QTRY_COMPARE(account->davUser(), u"u723741i"_s);
         QCOMPARE(server->lookups, 2);
+    }
+
+    void endedSignInWaitsForTheMember_data()
+    {
+        QTest::addColumn<bool>("browserSignedIn");
+        QTest::newRow("browser still signed in") << true;
+        QTest::newRow("browser signed out") << false;
+    }
+
+    void endedSignInWaitsForTheMember()
+    {
+        QFETCH(bool, browserSignedIn);
+        QStringList log;
+        OCC::Test::FakeIdentity identity(&log);
+        identity.subject = u"3c5d1f0e-6b2a-4d7e-9f10-2a4b6c8d0e12"_s;
+        identity.browserSession = browserSignedIn;
+        AccountStateBrowser browser;
+        browser.identity = &identity;
+        QDesktopServices::setUrlHandler(u"http"_s, &browser, "open");
+        const auto restore = qScopeGuard([] {
+            QDesktopServices::unsetUrlHandler(u"http"_s);
+            DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.sairibus.com"_s), QUrl(u"https://auth.sairibus.com/realms/sairibus"_s)});
+        });
+        DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.example"_s), identity.issuer()});
+        const auto store = std::make_shared<QHash<QString, QByteArray>>();
+        const auto account = Account::create();
+        account->setUrl(QUrl(u"https://nc.example"_s));
+        account->setDavUser(u"u723741i"_s);
+        account->setCredentials(new DeviceAccountCredentials(clubServer(clubServerFor(u"u723741i"_s)), u"u723741i"_s));
+        account->deviceSession()->setCredentialStore([store](const QString &key, const std::optional<QByteArray> &data, DeviceSession::Completion done) {
+            if (data) { data->isEmpty() ? void(store->remove(key)) : void(store->insert(key, *data)); }
+            done(store->value(key), {});
+        });
+        // The identity provider ended the offline session: its token has lapsed and its refresh token is unknown.
+        auto tokens = DeviceTokens();
+        tokens.accessToken = OCC::Test::jwtFor(identity.subject, 1000);
+        tokens.refreshToken = "refresh-ended-offline";
+        tokens.expiresAt = QDateTime::currentSecsSinceEpoch() - 10;
+        tokens.scopes = {u"openid"_s, u"offline_access"_s};
+        account->deviceSession()->adoptOffline(tokens);
+        const auto state = AccountStatePtr(new AccountState(account));
+        QSignalSpy required(state.data(), &AccountState::signInRequired);
+
+        // The browser's own session is tried first, without a sign-in page.
+        QTRY_VERIFY(!browser.opened.isEmpty());
+        QCOMPARE(QUrlQuery(browser.opened[0]).queryItemValue(u"prompt"_s), u"none"_s);
+        if (browserSignedIn) {
+            QTRY_COMPARE(account->deviceSession()->status(), DeviceSession::Status::Offline);
+            QTest::qWait(200);
+            QCOMPARE(required.size(), 0);
+            QVERIFY(!state->isSignedOut());
+            QCOMPARE(browser.opened.size(), 1);
+            return;
+        }
+
+        // Otherwise the account waits for the member and tells them once.
+        QTRY_COMPARE(required.size(), 1);
+        QVERIFY(state->isSignInRequired());
+        QCOMPARE(state->state(), AccountState::SignedOut);
+        QCOMPARE(state->connectionErrors(), QStringList{required[0][0].toString()});
+        state->checkConnectivity();
+        QTest::qWait(200);
+        QCOMPARE(browser.opened.size(), 1);
+        QCOMPARE(required.size(), 1);
+
+        // Log in shows the sign-in page.
+        state->signIn();
+        QTRY_COMPARE(browser.opened.size(), 2);
+        QVERIFY(!QUrlQuery(browser.opened[1]).hasQueryItem(u"prompt"_s));
+        QTRY_COMPARE(account->deviceSession()->status(), DeviceSession::Status::Offline);
+        QVERIFY(!state->isSignInRequired());
+    }
+
+    void refusedAppPasswordWaitsForTheMember()
+    {
+        QStringList log;
+        OCC::Test::FakeIdentity identity(&log);
+        identity.subject = u"8e2f4a6c-1d3b-4f5a-8c7e-9b0d2f4a6c81"_s;
+        const auto restore = qScopeGuard([] {
+            DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.sairibus.com"_s), QUrl(u"https://auth.sairibus.com/realms/sairibus"_s)});
+        });
+        DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.example"_s), identity.issuer()});
+        const auto store = std::make_shared<QHash<QString, QByteArray>>();
+        const auto account = Account::create();
+        account->setUrl(QUrl(u"https://nc.example"_s));
+        account->setDavUser(u"u723741i"_s);
+        const auto credentials = new DeviceAccountCredentials(clubServer(clubServerFor(u"u723741i"_s)), u"u723741i"_s);
+        account->setCredentials(credentials);
+        account->deviceSession()->setCredentialStore([store](const QString &key, const std::optional<QByteArray> &data, DeviceSession::Completion done) {
+            if (data) { data->isEmpty() ? void(store->remove(key)) : void(store->insert(key, *data)); }
+            done(store->value(key), {});
+        });
+        identity.seed("refresh-own-offline");
+        auto tokens = DeviceTokens();
+        tokens.accessToken = OCC::Test::jwtFor(identity.subject, 1000);
+        tokens.refreshToken = "refresh-own-offline";
+        tokens.expiresAt = QDateTime::currentSecsSinceEpoch() + 300;
+        tokens.scopes = {u"openid"_s, u"offline_access"_s};
+        account->deviceSession()->adoptOffline(tokens);
+        const auto state = AccountStatePtr(new AccountState(account));
+        QSignalSpy required(state.data(), &AccountState::signInRequired);
+        QTRY_COMPARE(state->state(), AccountState::NetworkError);
+
+        // The server refuses the app password: no window opens until the member chooses Log in.
+        Q_EMIT account->invalidCredentials();
+        QCOMPARE(required.size(), 1);
+        QVERIFY(state->isSignInRequired());
+        QCOMPARE(credentials->askedFromUser, 0);
+
+        // A Log in that ends in a network error ends the member's attempt; a later refusal waits again.
+        state->signIn();
+        QTRY_COMPARE(state->state(), AccountState::NetworkError);
+        Q_EMIT account->invalidCredentials();
+        QCOMPARE(required.size(), 2);
+        QVERIFY(state->isSignInRequired());
+        QCOMPARE(credentials->askedFromUser, 0);
+
+        // A refusal during the member's attempt opens Login Flow V2.
+        state->signIn();
+        Q_EMIT account->invalidCredentials();
+        QCOMPARE(credentials->askedFromUser, 1);
+        QCOMPARE(state->state(), AccountState::AskingCredentials);
+        QCOMPARE(required.size(), 2);
+    }
+
+    void endedOnlineGrantWaitsForTheMember()
+    {
+        QStringList log;
+        OCC::Test::FakeIdentity identity(&log);
+        identity.subject = u"5a7c9e1b-3d5f-4a6c-8e0a-1b3d5f7a9c2e"_s;
+        AccountStateBrowser browser;
+        browser.identity = &identity;
+        QDesktopServices::setUrlHandler(u"http"_s, &browser, "open");
+        const auto restore = qScopeGuard([] {
+            QDesktopServices::unsetUrlHandler(u"http"_s);
+            DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.sairibus.com"_s), QUrl(u"https://auth.sairibus.com/realms/sairibus"_s)});
+        });
+        DeviceSession::setDefaultEndpoints({QUrl(u"https://nc.example"_s), identity.issuer()});
+        const auto account = Account::create();
+        account->setUrl(QUrl(u"https://nc.example"_s));
+        account->setDavUser(u"u723741i"_s);
+        account->setCredentials(new DeviceAccountCredentials(clubServer(clubServerFor(u"u723741i"_s)), u"u723741i"_s));
+        account->deviceSession()->setCredentialStore([](const QString &, const std::optional<QByteArray> &, DeviceSession::Completion done) {
+            done({}, {});
+        });
+        // The account syncs with an online grant whose browser session has since ended.
+        auto tokens = DeviceTokens();
+        tokens.accessToken = OCC::Test::jwtFor(identity.subject, 1000);
+        tokens.refreshToken = "refresh-ended";
+        tokens.expiresAt = QDateTime::currentSecsSinceEpoch() - 10;
+        tokens.scopes = {u"openid"_s};
+        account->deviceSession()->adoptOnline(tokens);
+        const auto state = AccountStatePtr(new AccountState(account));
+        QSignalSpy required(state.data(), &AccountState::signInRequired);
+
+        QTRY_COMPARE(required.size(), 1);
+        QCOMPARE(state->state(), AccountState::SignedOut);
+        QCOMPARE(account->deviceSession()->status(), DeviceSession::Status::Absent);
+        QTest::qWait(200);
+        QVERIFY(browser.opened.isEmpty());
+
+        // Log in starts the sign-in from step 1.
+        state->signIn();
+        QTRY_COMPARE(browser.opened.size(), 1);
+        QCOMPARE(QUrlQuery(browser.opened[0]).queryItemValue(u"scope"_s, QUrl::FullyDecoded), u"openid"_s);
+        QTRY_COMPARE(account->deviceSession()->status(), DeviceSession::Status::Online);
     }
 
     void initTestCase()
