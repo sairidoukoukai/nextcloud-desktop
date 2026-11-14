@@ -95,9 +95,17 @@ class OWNCLOUDSYNC_EXPORT DeviceEnrollment : public QObject
 public:
     explicit DeviceEnrollment(DeviceSession *session, QObject *parent = nullptr, DeviceAuthorization::BrowserOpener opener = {});
 
+    /** How step 3 may involve the member. */
+    enum class Prompt {
+        Never, ///< Only through the browser's existing session; fails when the member has to sign in.
+        IfNeeded, ///< Without a prompt first, then with a sign-in page.
+        Always, ///< With a sign-in page at once.
+    };
+    Q_ENUM(Prompt)
+
     void signInOnline();
-    /** Step 3. Without @p silentFirst the browser shows the sign-in page at once. */
-    void completeOffline(bool silentFirst = true);
+    /** Step 3. */
+    void completeOffline(Prompt prompt = Prompt::IfNeeded);
     void cancel();
     [[nodiscard]] bool busy() const;
     [[nodiscard]] DeviceSession *session() const;
@@ -121,6 +129,7 @@ private:
     QPointer<DeviceSession> _session;
     DeviceAuthorization *_authorization;
     Phase _phase = Phase::Idle;
+    bool _promptIfNeeded = false;
 };
 
 }
