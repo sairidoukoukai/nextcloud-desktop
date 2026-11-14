@@ -9,6 +9,7 @@
 
 #include "connectionvalidator.h"
 #include "creds/abstractcredentials.h"
+#include "devicesession.h"
 
 #include <QByteArray>
 #include <QElapsedTimer>
@@ -118,6 +119,9 @@ public:
     /// Move from SignedOut state to Disconnected (attempting to connect)
     void signIn();
 
+    /** The account's sign-in ended and waits for the member to sign in again. */
+    [[nodiscard]] bool isSignInRequired() const;
+
     bool isConnected() const;
 
     bool needsToSignTermsOfService() const;
@@ -186,8 +190,17 @@ private:
     void fetchNavigationApps();
     /** Whether the device session can authenticate requests now; otherwise starts what it needs and reports false. */
     bool ensureDeviceSession();
+    enum class DeviceSignIn {
+        Online, ///< Step 1, in the browser.
+        OfflineAfterSignIn, ///< Step 3 in the background after the member's sign-in connected, in the browser session of step 1.
+        OfflineInBackground, ///< Step 3 in the background after a later connection, without a sign-in page.
+        OfflineSilently, ///< A new offline grant from the browser's existing session, without asking the member.
+        OfflineInteractive, ///< A new offline grant with a sign-in page.
+    };
     /** Runs the device sign-in. A background run follows a connection and never signs the account out. */
-    void startDeviceSignIn(bool offlineGrantOnly, bool background = false);
+    void startDeviceSignIn(DeviceSignIn signIn);
+    /** Signs the account out with @p reason and tells the member, who signs in again from the account's menu. */
+    void requireSignIn(const QString &reason);
     /**
      * Before connecting to the club's Nextcloud, adopts the user ID the server reports
      * for the app password when it differs from the stored one, then checks connectivity again.
@@ -205,6 +218,8 @@ Q_SIGNALS:
     void statusChanged();
     void desktopNotificationsAllowedChanged();
     void termsOfServiceChanged(OCC::AccountPtr account, OCC::AccountState::State state);
+    /** The account's sign-in ended; the member signs in again with signIn(). */
+    void signInRequired(const QString &reason);
 
 protected Q_SLOTS:
     void slotConnectionValidatorResult(OCC::ConnectionValidator::Status status, const QStringList &errors);
@@ -261,6 +276,13 @@ private:
     DeviceEnrollment *_deviceEnrollment = nullptr;
     bool _waitingForDeviceToken = false;
     bool _waitingForDeviceSignIn = false;
+    /** The member is signing in now, so the browser or Login Flow V2 may ask them. */
+    bool _interactiveSignIn = false;
+    DeviceSignIn _deviceSignIn = DeviceSignIn::Online;
+    DeviceSession::Status _deviceStatus = DeviceSession::Status::Unloaded;
+    /** The device session ended while the client ran, so a new one waits for the member. */
+    bool _deviceSessionEnded = false;
+    bool _signInRequired = false;
     /** The account signed in again without an earlier device session, so nothing ties the browser's member to this account yet. */
     bool _deviceMemberUnverified = false;
     /** The server reported the account's user ID for the current app password, or accepted a connection with it. */

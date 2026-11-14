@@ -89,6 +89,8 @@ public Q_SLOTS:
     void slotTrayMessageIfServerUnsupported(const OCC::AccountPtr &account);
     void slotNeedToAcceptTermsOfService(const OCC::AccountPtr &account,
                                         OCC::AccountState::State state);
+    /** Tells the member that the sending AccountState needs them to sign in again. */
+    void slotSignInRequired(const QString &reason);
 
     /**
      * Open a share dialog for a file or folder.

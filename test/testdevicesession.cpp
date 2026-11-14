@@ -257,6 +257,23 @@ private Q_SLOTS:
         QVERIFY2(renewal.endsWith("-offline"_L1), qPrintable(renewal));
     }
 
+    void offlineGrantWithoutPromptLeavesTheSignInToTheMember()
+    {
+        const auto account = createAccount();
+        DeviceEnrollment enrollment(account->deviceSession());
+        QSignalSpy offline(&enrollment, &DeviceEnrollment::offlineReady);
+        QSignalSpy failed(&enrollment, &DeviceEnrollment::failed);
+        _identity->browserSession = false;
+
+        enrollment.completeOffline(DeviceEnrollment::Prompt::Never);
+        QTRY_COMPARE(failed.size(), 1);
+        QCOMPARE(offline.size(), 0);
+        QVERIFY(!enrollment.busy());
+        // No sign-in page opened.
+        QCOMPARE(_log.filter(u"browser:auth"_s), QStringList{u"browser:auth openid offline_access prompt=none"_s});
+        QVERIFY(_store.isEmpty());
+    }
+
     void refreshesOneAtATimeAndStoresTheRotatedTokenFirst()
     {
         auto session = offlineSession();

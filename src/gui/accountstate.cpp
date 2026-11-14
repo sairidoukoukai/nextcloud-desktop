@@ -137,8 +137,14 @@ AccountState::AccountState(const AccountPtr &account)
     });
 
     const auto session = account->deviceSession();
+    _deviceStatus = session->status();
     connect(session, &DeviceSession::statusChanged, this, [this] {
         const auto status = _account->deviceSession()->status();
+        const auto previous = std::exchange(_deviceStatus, status);
+        if ((previous == DeviceSession::Status::Online || previous == DeviceSession::Status::Offline)
+            && (status == DeviceSession::Status::Absent || status == DeviceSession::Status::Lost)) {
+            _deviceSessionEnded = true;
+        }
         if (_waitingForDeviceToken && (status == DeviceSession::Status::Absent || status == DeviceSession::Status::Lost)) {
             _waitingForDeviceToken = false;
             checkConnectivity();
@@ -196,7 +202,7 @@ void AccountState::setState(State state)
 
         if (_state == SignedOut) {
             _connectionStatus = ConnectionValidator::Undefined;
-            if (oldState != _state && oldState == Disconnected) {
+            if (oldState != _state && oldState == Disconnected && !_signInRequired) {
                 qCInfo(lcAccountState) << "Invalid credentials for" << _account->url().toString() << "login needed";
                 setState(AskingCredentials);
             }
@@ -286,7 +292,33 @@ void AccountState::signIn()
 {
     if (_state == SignedOut) {
         _waitingForNewCredentials = false;
+        _signInRequired = false;
+        _interactiveSignIn = true;
         setState(Disconnected);
+    }
+}
+
+bool AccountState::isSignInRequired() const
+{
+    return _signInRequired && isSignedOut();
+}
+
+void AccountState::requireSignIn(const QString &reason)
+{
+    qCWarning(lcAccountState) << "The sign-in of" << _account->url().toString() << "ended:" << reason;
+    _interactiveSignIn = false;
+    _waitingForDeviceSignIn = false;
+    _waitingForNewCredentials = false;
+    if (_deviceEnrollment) {
+        // A sign-in still running in the background must not open the browser later.
+        _deviceEnrollment->cancel();
+    }
+    _connectionErrors = {reason};
+    const auto notify = !isSignInRequired();
+    _signInRequired = true;
+    setState(SignedOut);
+    if (notify) {
+        Q_EMIT signInRequired(reason);
     }
 }
 
@@ -499,11 +531,17 @@ void AccountState::slotConnectionValidatorResult(ConnectionValidator::Status sta
     _connectionErrors = errors;
     // A refused principal, or any other failure, checks the user ID again before the next attempt.
     _serverUserChecked = status == ConnectionValidator::Connected;
+    // The member's sign-in ends with this result, unless it asks for a new app password.
+    const auto memberSignedIn = _interactiveSignIn;
+    if (status != ConnectionValidator::CredentialsWrong && status != ConnectionValidator::CredentialsNotReady) {
+        _interactiveSignIn = false;
+    }
 
     switch (status) {
     case ConnectionValidator::Connected:
         // The server accepted this account's app password with the device token: the member is the account's own.
         _deviceMemberUnverified = false;
+        _deviceSessionEnded = false;
         if (_state != Connected) {
             setState(Connected);
             resetRetryConnection();
@@ -517,7 +555,7 @@ void AccountState::slotConnectionValidatorResult(ConnectionValidator::Status sta
             // An account that signed in again syncs with its online grant until
             // its own offline session follows in the same browser session.
             if (_account->deviceSession()->appliesTo(_account->url()) && _account->deviceSession()->status() == DeviceSession::Status::Online) {
-                startDeviceSignIn(true, true);
+                startDeviceSignIn(memberSignedIn ? DeviceSignIn::OfflineAfterSignIn : DeviceSignIn::OfflineInBackground);
             }
         }
         break;
@@ -606,12 +644,17 @@ bool AccountState::ensureDeviceSession()
         _waitingForDeviceToken = true;
         return false;
     case DeviceSession::Status::Absent:
+        if (_deviceSessionEnded && !_interactiveSignIn) {
+            requireSignIn(tr("This computer's sign-in has ended."));
+            return false;
+        }
         // Sign in from the start so the browser step of a new app password can reuse the browser session.
         _deviceMemberUnverified = true;
-        startDeviceSignIn(false);
+        startDeviceSignIn(DeviceSignIn::Online);
         return false;
     case DeviceSession::Status::Lost:
-        startDeviceSignIn(true);
+        // The browser may still be signed in; otherwise the member signs in again when they choose to.
+        startDeviceSignIn(_interactiveSignIn ? DeviceSignIn::OfflineInteractive : DeviceSignIn::OfflineSilently);
         return false;
     case DeviceSession::Status::Online:
     case DeviceSession::Status::Offline:
@@ -628,7 +671,7 @@ bool AccountState::ensureDeviceSession()
     return false;
 }
 
-void AccountState::startDeviceSignIn(bool offlineGrantOnly, bool background)
+void AccountState::startDeviceSignIn(DeviceSignIn signIn)
 {
     if (!_deviceEnrollment) {
         _deviceEnrollment = new DeviceEnrollment(_account->deviceSession(), this);
@@ -646,31 +689,49 @@ void AccountState::startDeviceSignIn(bool offlineGrantOnly, bool background)
         });
         connect(_deviceEnrollment, &DeviceEnrollment::failed, this, [this](const QString &error) {
             qCWarning(lcAccountState) << "Device sign-in failed for" << _account->url().toString() << error;
-            if (std::exchange(_waitingForDeviceSignIn, false)) {
-                _connectionErrors = {error};
-                setState(SignedOut);
+            if (_waitingForDeviceSignIn) {
+                requireSignIn(_deviceSignIn == DeviceSignIn::OfflineSilently ? tr("This computer's sign-in has ended.") : error);
             }
         });
     }
     if (_deviceEnrollment->busy()) {
         return;
     }
-    if (!background) {
-        // Requests cannot authenticate until this finishes; a failure signs the account out until the member signs in again.
+    _deviceSignIn = signIn;
+    if (signIn != DeviceSignIn::OfflineAfterSignIn && signIn != DeviceSignIn::OfflineInBackground) {
+        // Requests cannot authenticate until this finishes; a failure waits for the member to sign in again.
         _waitingForDeviceSignIn = true;
         setState(AskingCredentials);
     }
-    if (!offlineGrantOnly) {
+    switch (signIn) {
+    case DeviceSignIn::Online:
+        _interactiveSignIn = true;
         _deviceEnrollment->signInOnline();
-    } else {
-        // After an online sign-in the browser session usually still exists; an ended offline session asks at once.
-        _deviceEnrollment->completeOffline(background);
+        break;
+    case DeviceSignIn::OfflineAfterSignIn:
+        // After an online sign-in the browser session usually still exists.
+        _deviceEnrollment->completeOffline(DeviceEnrollment::Prompt::IfNeeded);
+        break;
+    case DeviceSignIn::OfflineSilently:
+    case DeviceSignIn::OfflineInBackground:
+        _deviceEnrollment->completeOffline(DeviceEnrollment::Prompt::Never);
+        break;
+    case DeviceSignIn::OfflineInteractive:
+        _interactiveSignIn = true;
+        _deviceEnrollment->completeOffline(DeviceEnrollment::Prompt::Always);
+        break;
     }
 }
 
 void AccountState::handleInvalidCredentials()
 {
     if (isSignedOut() || _waitingForNewCredentials) {
+        return;
+    }
+
+    // A refused or missing app password of the club's Nextcloud waits until the member signs in again.
+    if (_account->deviceSession()->appliesTo(_account->url()) && !_interactiveSignIn) {
+        requireSignIn(tr("This computer's app password no longer works."));
         return;
     }
 
@@ -802,8 +863,7 @@ void AccountState::checkServerUser()
                 credentials->forgetSensitiveData();
             }
             Q_EMIT account->wantsAccountSaved(account);
-            state->_connectionErrors = {tr("Signed in as %1, which does not own this account. Sign in with the account's own member.").arg(user)};
-            state->setState(SignedOut);
+            state->requireSignIn(tr("Signed in as %1, which does not own this account. Sign in with the account's own member.").arg(user));
         });
     });
     job->start();

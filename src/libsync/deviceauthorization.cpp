@@ -284,13 +284,15 @@ void DeviceEnrollment::signInOnline()
     _authorization->start(DeviceAuthorization::Grant::Online, false);
 }
 
-void DeviceEnrollment::completeOffline(bool silentFirst)
+void DeviceEnrollment::completeOffline(Prompt prompt)
 {
     if (busy()) {
         return;
     }
-    _phase = silentFirst ? Phase::SilentOffline : Phase::InteractiveOffline;
-    _authorization->start(DeviceAuthorization::Grant::Offline, silentFirst);
+    const auto silent = prompt != Prompt::Always;
+    _phase = silent ? Phase::SilentOffline : Phase::InteractiveOffline;
+    _promptIfNeeded = prompt == Prompt::IfNeeded;
+    _authorization->start(DeviceAuthorization::Grant::Offline, silent);
 }
 
 void DeviceEnrollment::cancel()
@@ -312,7 +314,7 @@ void DeviceEnrollment::authorizationFinished(DeviceAuthorization::Outcome outcom
         Q_EMIT failed(tr("The account was removed."));
         return;
     }
-    if (outcome == DeviceAuthorization::Outcome::LoginRequired && phase == Phase::SilentOffline) {
+    if (outcome == DeviceAuthorization::Outcome::LoginRequired && phase == Phase::SilentOffline && _promptIfNeeded) {
         // The browser has no session any more; ask again with a sign-in page.
         _phase = Phase::InteractiveOffline;
         _authorization->start(DeviceAuthorization::Grant::Offline, false);

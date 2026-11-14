@@ -14,6 +14,8 @@
 #include <QQmlNetworkAccessManagerFactory>
 #include <QSystemTrayIcon>
 
+#include <functional>
+
 class QScreen;
 class QMenu;
 class QPalette;
@@ -70,6 +72,9 @@ class Systray : public QSystemTrayIcon
 
 public:
     static Systray *instance();
+
+    /** Shows a notification whose click runs @p onClick, until another notification replaces it. */
+    void showActionMessage(const QString &title, const QString &message, std::function<void()> onClick);
     ~Systray() override = default;
 
     enum class TaskBarPosition { Bottom, Left, Top, Right };
@@ -226,6 +231,7 @@ private:
 
     bool _isOpen = false;
     bool _isTrayContextMenuVisible = false;
+    std::function<void()> _messageAction;
     std::unique_ptr<QQmlApplicationEngine> _trayEngine;
     QPointer<QMenu> _contextMenu;
     QHash<QString, QPointer<QQuickWindow>> _activitiesWindows;
