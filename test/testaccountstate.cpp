@@ -481,6 +481,7 @@ private Q_SLOTS:
             QCOMPARE(asked, ownSession ? QStringList{} : (QStringList{u"cjyet-yo"_s, u"u723741i"_s}));
         } else {
             QTRY_COMPARE(state->state(), AccountState::SignedOut);
+            QVERIFY(state->isSignInRequired());
             QCOMPARE(asked, (QStringList{u"cjyet-yo"_s, u"u723741i"_s}));
             QCOMPARE(account->davUser(), u"cjyet-yo"_s);
             QCOMPARE(account->deviceSession()->status(), DeviceSession::Status::Absent);

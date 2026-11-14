@@ -863,8 +863,7 @@ void AccountState::checkServerUser()
                 credentials->forgetSensitiveData();
             }
             Q_EMIT account->wantsAccountSaved(account);
-            state->_connectionErrors = {tr("Signed in as %1, which does not own this account. Sign in with the account's own member.").arg(user)};
-            state->setState(SignedOut);
+            state->requireSignIn(tr("Signed in as %1, which does not own this account. Sign in with the account's own member.").arg(user));
         });
     });
     job->start();
