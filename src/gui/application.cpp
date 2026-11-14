@@ -853,6 +853,8 @@ void Application::slotAccountStateRemoved(AccountState *accountState)
             _gui.data(), &ownCloudGui::slotComputeOverallSyncStatus);
         disconnect(accountState->account().data(), &Account::serverVersionChanged,
             _gui.data(), &ownCloudGui::slotTrayMessageIfServerUnsupported);
+        disconnect(accountState, &AccountState::signInRequired,
+            _gui.data(), &ownCloudGui::slotSignInRequired);
     }
     if (_folderManager) {
         disconnect(accountState, &AccountState::stateChanged,
@@ -877,6 +879,8 @@ void Application::slotAccountStateAdded(AccountState *accountState)
         _gui.data(), &ownCloudGui::slotTrayMessageIfServerUnsupported);
     connect(accountState, &AccountState::termsOfServiceChanged,
             _gui.data(), &ownCloudGui::slotNeedToAcceptTermsOfService);
+    connect(accountState, &AccountState::signInRequired,
+            _gui.data(), &ownCloudGui::slotSignInRequired);
     connect(accountState, &AccountState::stateChanged,
         _folderManager.data(), &FolderMan::slotAccountStateChanged);
     connect(accountState->account().data(), &Account::serverVersionChanged,

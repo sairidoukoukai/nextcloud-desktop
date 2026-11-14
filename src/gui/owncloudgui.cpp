@@ -325,6 +325,22 @@ void ownCloudGui::slotNeedToAcceptTermsOfService(const OCC::AccountPtr &account,
     }
 }
 
+void ownCloudGui::slotSignInRequired(const QString &reason)
+{
+    const auto accountState = QPointer<AccountState>(qobject_cast<AccountState *>(sender()));
+    if (!accountState || !_tray) {
+        return;
+    }
+    _tray->showActionMessage(tr("Sign in to keep syncing"),
+                             tr("%1: %2 Choose Log in for this account.").arg(accountState->account()->displayName(), reason),
+                             [accountState] {
+                                 if (accountState && accountState->isSignInRequired()) {
+                                     accountState->account()->resetRejectedCertificates();
+                                     accountState->signIn();
+                                 }
+                             });
+}
+
 void ownCloudGui::slotComputeOverallSyncStatus()
 {
     bool allSignedOut = true;

@@ -28,14 +28,17 @@ of the website, the club's other services or the browser leaves syncing
 running.
 
 A sign-in left unused for 90 days, or older than a year, ends. The client then
-opens the browser to sign in again and keeps your folders and app password.
+renews it from the browser if the browser is still signed in. Otherwise it
+shows a notification and waits until you choose **Log in**, or opens the sign-in
+page the next time it starts. Your folders stay as they are.
 
 ## When the client asks again
 
-- **The browser opens by itself**: the sign-in for this computer ended. Sign
-  in once more.
-- **A Nextcloud approval page opens**: the app password was revoked. Approve
-  the device again.
+- **"Sign in to keep syncing"**: the sign-in for this computer ended or its app
+  password stopped working. Click the notification, or choose **Log in** for
+  the account in the tray menu, then sign in in the browser.
+- **A Nextcloud approval page opens**: after you choose **Log in**, the app
+  password needs a new approval. Select **Grant access**.
 - **"The server refused this computer's sign-in"**: your account no longer has
   Nextcloud access. Ask a club administrator.
 - **"Keep syncing these folders as …?"**: the account was set up under an

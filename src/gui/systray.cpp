@@ -145,6 +145,11 @@ void Systray::openUrlInBrowser(const QUrl &url) const
 Systray::Systray()
     : QSystemTrayIcon(nullptr)
 {
+    connect(this, &QSystemTrayIcon::messageClicked, this, [this] {
+        if (const auto action = std::exchange(_messageAction, {})) {
+            action();
+        }
+    });
 #if defined(Q_OS_MACOS) && __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_14 && defined(BUILD_OWNCLOUD_OSX_BUNDLE)
     setUserNotificationCenterDelegate();
     checkNotificationAuth(MacNotificationAuthorizationOptions::Default); // No provisional auth, ask user explicitly first time
@@ -1133,8 +1138,15 @@ void Systray::setIsOpen(const bool isOpen)
     Q_EMIT isOpenChanged();
 }
 
+void Systray::showActionMessage(const QString &title, const QString &message, std::function<void()> onClick)
+{
+    showMessage(title, message);
+    _messageAction = std::move(onClick);
+}
+
 void Systray::showMessage(const QString &title, const QString &message, MessageIcon icon)
 {
+    _messageAction = {};
 #ifdef USE_FDO_NOTIFICATIONS
     if (QDBusInterface(NOTIFICATIONS_SERVICE, NOTIFICATIONS_PATH, NOTIFICATIONS_IFACE).isValid()) {
         const QVariantMap hints = {{QStringLiteral("desktop-entry"), LINUX_APPLICATION_ID}};
